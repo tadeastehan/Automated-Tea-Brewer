@@ -26,6 +26,8 @@
 #include "demos/keypad_encoder/lv_demo_keypad_encoder.h"
 #include "iot_knob.h"
 
+#include "uart_api.h"
+
 static const char *TAG = "main";
 
 //NOTE: We currently have two versions of the 2.1 knob screen. If you have purchased the touch version, please set the macro definition below to 1
@@ -217,6 +219,9 @@ void app_main(void)
     gpio_set_level(BSP_LCD_BL, 0);
 
     vTaskDelay(pdMS_TO_TICKS(500));
+
+    uart_api_init();
+    uart_api_send("Hello from tea brewer!\r\n");
 
 #if MEMORY_MONITOR
     sys_monitor_start();
