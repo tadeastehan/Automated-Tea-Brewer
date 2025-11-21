@@ -10,6 +10,15 @@ lv_obj_t * ui_Label6 = NULL;
 lv_obj_t * ui_TextArea1 = NULL;
 lv_obj_t * ui_ReturnToTeaScreen2 = NULL;
 // event funtions
+void ui_event_ErrorScreen(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_SCREEN_LOADED) {
+        onErrorScreen(e);
+    }
+}
+
 void ui_event_ReturnToTeaScreen2(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -66,6 +75,7 @@ void ui_ErrorScreen_screen_init(void)
     lv_obj_set_style_bg_image_src(ui_ReturnToTeaScreen2, &ui_img_287775719, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     lv_obj_add_event_cb(ui_ReturnToTeaScreen2, ui_event_ReturnToTeaScreen2, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(ui_ErrorScreen, ui_event_ErrorScreen, LV_EVENT_ALL, NULL);
 
 }
 

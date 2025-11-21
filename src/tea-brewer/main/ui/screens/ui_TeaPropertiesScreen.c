@@ -18,6 +18,15 @@ lv_obj_t * ui_ReturnToTeaScreen = NULL;
 lv_obj_t * ui_Label12 = NULL;
 lv_obj_t * ui_Label27 = NULL;
 // event funtions
+void ui_event_TeaPropertiesScreen(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_SCREEN_LOADED) {
+        onTeaPropertieScreen(e);
+    }
+}
+
 void ui_event_Roller1(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -201,6 +210,7 @@ void ui_TeaPropertiesScreen_screen_init(void)
     lv_obj_add_event_cb(ui_Roller4, ui_event_Roller4, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_Roller2, ui_event_Roller2, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_ReturnToTeaScreen, ui_event_ReturnToTeaScreen, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(ui_TeaPropertiesScreen, ui_event_TeaPropertiesScreen, LV_EVENT_ALL, NULL);
 
 }
 

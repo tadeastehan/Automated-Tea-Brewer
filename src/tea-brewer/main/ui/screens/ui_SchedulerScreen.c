@@ -20,6 +20,15 @@ lv_obj_t * ui_ReturnToTeaScreen5 = NULL;
 lv_obj_t * ui_Label19 = NULL;
 lv_obj_t * ui_Label26 = NULL;
 // event funtions
+void ui_event_SchedulerScreen(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_SCREEN_LOADED) {
+        onSchedulerScreen(e);
+    }
+}
+
 void ui_event_ReturnToTeaScreen4(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -235,6 +244,7 @@ void ui_SchedulerScreen_screen_init(void)
     lv_obj_add_event_cb(ui_Roller7, ui_event_Roller7, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_Roller8, ui_event_Roller8, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_ReturnToTeaScreen5, ui_event_ReturnToTeaScreen5, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(ui_SchedulerScreen, ui_event_SchedulerScreen, LV_EVENT_ALL, NULL);
 
 }
 

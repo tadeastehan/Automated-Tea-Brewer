@@ -13,6 +13,7 @@ extern "C" {
 // SCREEN: ui_ErrorScreen
 extern void ui_ErrorScreen_screen_init(void);
 extern void ui_ErrorScreen_screen_destroy(void);
+extern void ui_event_ErrorScreen(lv_event_t * e);
 extern lv_obj_t * ui_ErrorScreen;
 extern lv_obj_t * ui_Label6;
 extern lv_obj_t * ui_TextArea1;

@@ -13,6 +13,7 @@ extern "C" {
 // SCREEN: ui_BrewNowOrSchedulerScreen
 extern void ui_BrewNowOrSchedulerScreen_screen_init(void);
 extern void ui_BrewNowOrSchedulerScreen_screen_destroy(void);
+extern void ui_event_BrewNowOrSchedulerScreen(lv_event_t * e);
 extern lv_obj_t * ui_BrewNowOrSchedulerScreen;
 extern lv_obj_t * ui_Label11;
 extern lv_obj_t * ui_Label10;

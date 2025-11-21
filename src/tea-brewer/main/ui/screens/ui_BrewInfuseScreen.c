@@ -12,6 +12,15 @@ lv_obj_t * ui_BrewInfuseTitle = NULL;
 lv_obj_t * ui_BrewInfuseCurrentValue = NULL;
 lv_obj_t * ui_BrewInfuseSetValue = NULL;
 // event funtions
+void ui_event_BrewInfuseScreen(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_SCREEN_LOADED) {
+        onBrewInfuseScreen(e);
+    }
+}
+
 void ui_event_StopBrewing(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -106,6 +115,7 @@ void ui_BrewInfuseScreen_screen_init(void)
     lv_obj_set_style_text_font(ui_BrewInfuseSetValue, &lv_font_montserrat_26, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     lv_obj_add_event_cb(ui_StopBrewing, ui_event_StopBrewing, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(ui_BrewInfuseScreen, ui_event_BrewInfuseScreen, LV_EVENT_ALL, NULL);
 
 }
 

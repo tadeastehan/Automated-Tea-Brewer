@@ -13,6 +13,7 @@ extern "C" {
 // SCREEN: ui_ScheduledScreen
 extern void ui_ScheduledScreen_screen_init(void);
 extern void ui_ScheduledScreen_screen_destroy(void);
+extern void ui_event_ScheduledScreen(lv_event_t * e);
 extern lv_obj_t * ui_ScheduledScreen;
 extern lv_obj_t * ui_Label28;
 extern lv_obj_t * ui_Label30;

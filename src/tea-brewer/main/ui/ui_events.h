@@ -10,19 +10,29 @@
 extern "C" {
 #endif
 
+void onMainScreen(lv_event_t * e);
 void nextTeaScreen(lv_event_t * e);
+void onTeaScreen(lv_event_t * e);
+void onTeapotScreen(lv_event_t * e);
+void onBrewInfuseScreen(lv_event_t * e);
 void stopBrewing(lv_event_t * e);
+void onErrorScreen(lv_event_t * e);
+void onTeaPropertieScreen(lv_event_t * e);
 void changeBrewingTeaTemperature(lv_event_t * e);
 void changeInfusionTimeSecond(lv_event_t * e);
 void changeInfusionTimeMinute(lv_event_t * e);
+void onBrewNowOrSchedulerScreen(lv_event_t * e);
 void brewNow(lv_event_t * e);
+void onSettingsScreen(lv_event_t * e);
 void changeDryingTime(lv_event_t * e);
 void dryingPositionUp(lv_event_t * e);
 void dryingPositionDown(lv_event_t * e);
+void onSchedulerScreen(lv_event_t * e);
 void changeSchedulerTemperature(lv_event_t * e);
 void changeSchedulerTimeMinute(lv_event_t * e);
 void changeSchedulerTimeHour(lv_event_t * e);
 void beginScheduler(lv_event_t * e);
+void onScheduledScreen(lv_event_t * e);
 void stopScheduledBrew(lv_event_t * e);
 
 #ifdef __cplusplus

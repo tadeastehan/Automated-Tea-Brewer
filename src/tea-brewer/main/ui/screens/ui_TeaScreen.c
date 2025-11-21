@@ -19,6 +19,9 @@ void ui_event_TeaScreen(lv_event_t * e)
     if(event_code == LV_EVENT_CLICKED) {
         nextTeaScreen(e);
     }
+    if(event_code == LV_EVENT_SCREEN_LOADED) {
+        onTeaScreen(e);
+    }
 }
 
 void ui_event_Begin(lv_event_t * e)

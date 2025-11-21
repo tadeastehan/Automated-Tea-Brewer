@@ -9,6 +9,14 @@ lv_obj_t * ui_TeapotScreen = NULL;
 lv_obj_t * ui_Label4 = NULL;
 lv_obj_t * ui_Image6 = NULL;
 // event funtions
+void ui_event_TeapotScreen(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_SCREEN_LOADED) {
+        onTeapotScreen(e);
+    }
+}
 
 // build funtions
 
@@ -44,6 +52,8 @@ void ui_TeapotScreen_screen_init(void)
     lv_obj_add_flag(ui_Image6, LV_OBJ_FLAG_CLICKABLE);     /// Flags
     lv_obj_remove_flag(ui_Image6, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM |
                        LV_OBJ_FLAG_SCROLL_CHAIN);     /// Flags
+
+    lv_obj_add_event_cb(ui_TeapotScreen, ui_event_TeapotScreen, LV_EVENT_ALL, NULL);
 
 }
 

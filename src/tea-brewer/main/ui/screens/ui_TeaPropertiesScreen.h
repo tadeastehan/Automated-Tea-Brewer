@@ -13,6 +13,7 @@ extern "C" {
 // SCREEN: ui_TeaPropertiesScreen
 extern void ui_TeaPropertiesScreen_screen_init(void);
 extern void ui_TeaPropertiesScreen_screen_destroy(void);
+extern void ui_event_TeaPropertiesScreen(lv_event_t * e);
 extern lv_obj_t * ui_TeaPropertiesScreen;
 extern lv_obj_t * ui_Label5;
 extern void ui_event_Roller1(lv_event_t * e);

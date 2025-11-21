@@ -99,3 +99,53 @@ void stopScheduledBrew(lv_event_t * e)
 {
 	// Your code here
 }
+
+void onMainScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onTeaScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onTeapotScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onBrewInfuseScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onErrorScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onTeaPropertieScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onBrewNowOrSchedulerScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onSettingsScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onSchedulerScreen(lv_event_t * e)
+{
+	// Your code here
+}
+
+void onScheduledScreen(lv_event_t * e)
+{
+	// Your code here
+}

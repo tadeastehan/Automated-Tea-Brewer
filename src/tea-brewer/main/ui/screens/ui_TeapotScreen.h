@@ -13,6 +13,7 @@ extern "C" {
 // SCREEN: ui_TeapotScreen
 extern void ui_TeapotScreen_screen_init(void);
 extern void ui_TeapotScreen_screen_destroy(void);
+extern void ui_event_TeapotScreen(lv_event_t * e);
 extern lv_obj_t * ui_TeapotScreen;
 extern lv_obj_t * ui_Label4;
 extern lv_obj_t * ui_Image6;

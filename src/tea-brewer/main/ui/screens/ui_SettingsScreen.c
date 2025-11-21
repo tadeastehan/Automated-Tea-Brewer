@@ -23,6 +23,9 @@ void ui_event_SettingsScreen(lv_event_t * e)
     if(event_code == LV_EVENT_CLICKED) {
         _ui_screen_change(&ui_MainScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_MainScreen_screen_init);
     }
+    if(event_code == LV_EVENT_SCREEN_LOADED) {
+        onSettingsScreen(e);
+    }
 }
 
 void ui_event_Roller5(lv_event_t * e)

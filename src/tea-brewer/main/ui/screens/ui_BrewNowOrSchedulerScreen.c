@@ -12,6 +12,15 @@ lv_obj_t * ui_ReturnToTeaScreen3 = NULL;
 lv_obj_t * ui_BrewNow = NULL;
 lv_obj_t * ui_Schedule = NULL;
 // event funtions
+void ui_event_BrewNowOrSchedulerScreen(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_SCREEN_LOADED) {
+        onBrewNowOrSchedulerScreen(e);
+    }
+}
+
 void ui_event_ReturnToTeaScreen3(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -122,6 +131,7 @@ void ui_BrewNowOrSchedulerScreen_screen_init(void)
     lv_obj_add_event_cb(ui_ReturnToTeaScreen3, ui_event_ReturnToTeaScreen3, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_BrewNow, ui_event_BrewNow, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_Schedule, ui_event_Schedule, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(ui_BrewNowOrSchedulerScreen, ui_event_BrewNowOrSchedulerScreen, LV_EVENT_ALL, NULL);
 
 }
 
