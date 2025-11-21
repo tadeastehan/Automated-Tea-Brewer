@@ -10,6 +10,14 @@
 extern "C" {
 #endif
 
+// Global tea index for navigation
+extern uint8_t current_tea_index;
+
+// Helper function for updating tea screen label
+void update_tea_screen_label(void);
+// Helper function for updating tea color theme
+void update_tea_color(void);
+
 void onMainScreen(lv_event_t * e);
 void nextTeaScreen(lv_event_t * e);
 void onTeaScreen(lv_event_t * e);

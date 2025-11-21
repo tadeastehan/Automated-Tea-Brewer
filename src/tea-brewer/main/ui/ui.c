@@ -5,6 +5,10 @@
 
 #include "ui.h"
 #include "ui_helpers.h"
+#include "ui_events.h"
+#include "iot_knob.h"
+#include "../settings.h"
+#include "esp_lvgl_port.h"
 
 ///////////////////// VARIABLES ////////////////////
 
@@ -21,7 +25,72 @@ lv_obj_t * ui____initial_actions0;
 ///////////////////// ANIMATIONS ////////////////////
 
 ///////////////////// FUNCTIONS ////////////////////
-void   LVGL_knob_event(void *event) {}
+
+void LVGL_knob_event(void *event)
+{
+	knob_event_t knob_event = (knob_event_t)(uintptr_t)event;
+	
+	// Lock LVGL for thread-safe operation
+	lvgl_port_lock(0);
+	
+	// Only handle knob events on navigable screens
+	if (ui_screen_state.current_screen != UI_SCREEN_MAIN &&
+	    ui_screen_state.current_screen != UI_SCREEN_TEA &&
+	    ui_screen_state.current_screen != UI_SCREEN_SETTINGS) {
+		lvgl_port_unlock();
+		return;
+	}
+	
+	if (knob_event == KNOB_RIGHT) {  // Swapped: RIGHT now goes left
+		// Right rotation → Navigate LEFT
+		if (ui_screen_state.current_screen == UI_SCREEN_MAIN) {
+			// MAIN → SETTINGS
+			_ui_screen_change(&ui_SettingsScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_SettingsScreen_screen_init);
+		}
+		else if (ui_screen_state.current_screen == UI_SCREEN_TEA) {
+			if (current_tea_index == 0) {
+				// TEA[0] → MAIN
+				_ui_screen_change(&ui_MainScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_MainScreen_screen_init);
+			} else {
+				// TEA[n] → TEA[n-1]
+				current_tea_index--;
+				update_tea_screen_label();
+				update_tea_color();
+			}
+		}
+		else if (ui_screen_state.current_screen == UI_SCREEN_SETTINGS) {
+			// SETTINGS → TEA[5] (last tea)
+			current_tea_index = MAX_TEA_TYPES - 1;
+			_ui_screen_change(&ui_TeaScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeaScreen_screen_init);
+		}
+	}
+	else if (knob_event == KNOB_LEFT) {  // Swapped: LEFT now goes right
+		// Left rotation → Navigate RIGHT
+		if (ui_screen_state.current_screen == UI_SCREEN_MAIN) {
+			// MAIN → TEA[0]
+			current_tea_index = 0;
+			_ui_screen_change(&ui_TeaScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeaScreen_screen_init);
+		}
+		else if (ui_screen_state.current_screen == UI_SCREEN_TEA) {
+			if (current_tea_index >= MAX_TEA_TYPES - 1) {
+				// TEA[9] → SETTINGS
+				_ui_screen_change(&ui_SettingsScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_SettingsScreen_screen_init);
+			} else {
+				// TEA[n] → TEA[n+1]
+				current_tea_index++;
+				update_tea_screen_label();
+				update_tea_color();
+			}
+		}
+		else if (ui_screen_state.current_screen == UI_SCREEN_SETTINGS) {
+			// SETTINGS → MAIN
+			_ui_screen_change(&ui_MainScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_MainScreen_screen_init);
+		}
+	}
+	
+	lvgl_port_unlock();
+}
+
 void   LVGL_button_event(void *event) {}
 ///////////////////// SCREENS ////////////////////
 

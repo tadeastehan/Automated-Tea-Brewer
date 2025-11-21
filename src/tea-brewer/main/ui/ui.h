@@ -33,6 +33,24 @@ extern "C" {
 
 ///////////////////// VARIABLES ////////////////////
 
+// Screen tracking structure
+typedef struct {
+    uint8_t current_screen;
+} ui_screen_state_t;
+
+extern ui_screen_state_t ui_screen_state;
+
+// Screen IDs
+#define UI_SCREEN_MAIN 0
+#define UI_SCREEN_TEA 1
+#define UI_SCREEN_TEAPOT 2
+#define UI_SCREEN_BREW_INFUSE 3
+#define UI_SCREEN_ERROR 4
+#define UI_SCREEN_TEA_PROPERTIES 5
+#define UI_SCREEN_BREW_NOW_OR_SCHEDULER 6
+#define UI_SCREEN_SETTINGS 7
+#define UI_SCREEN_SCHEDULER 8
+#define UI_SCREEN_SCHEDULED 9
 
 // EVENTS
 

@@ -26,6 +26,16 @@ static const sys_param_t g_default_sys_param = {
     .magic = MAGIC_HEAD,
     .need_hint = 1,
     .language = LANGUAGE_EN,
+    .drying_time = 10,       // Default 10 minutes
+    .drying_position = 0,    // Default position 0
+    .tea_params = {
+        {.temperature = 80, .infusion_time = 120},   // Tea 0: Green Tea - 2 min, 80°C
+        {.temperature = 100, .infusion_time = 240},  // Tea 1: Black Tea - 4 min, 100°C
+        {.temperature = 100, .infusion_time = 360},  // Tea 2: Herbal Tea - 6 min, 100°C
+        {.temperature = 100, .infusion_time = 360},  // Tea 3: Fruit Tea - 6 min, 100°C
+        {.temperature = 80, .infusion_time = 240},   // Tea 4: White Tea - 4 min, 80°C
+        {.temperature = 100, .infusion_time = 300},  // Tea 5: Functional Tea - 5 min, 100°C
+    },
 };
 
 static esp_err_t settings_check(sys_param_t *param)
@@ -86,4 +96,89 @@ esp_err_t settings_write_parameter_to_nvs(void)
 sys_param_t *settings_get_parameter(void)
 {
     return &g_sys_param;
+}
+
+void settings_set_drying_time(uint8_t time)
+{
+    if (time <= 59) {  // Validate range (0-59 minutes)
+        g_sys_param.drying_time = time;
+        settings_write_parameter_to_nvs();
+    }
+}
+
+uint8_t settings_get_drying_time(void)
+{
+    return g_sys_param.drying_time;
+}
+
+void settings_set_drying_position(int position)
+{
+    g_sys_param.drying_position = position;
+    settings_write_parameter_to_nvs();
+}
+
+int settings_get_drying_position(void)
+{
+    return g_sys_param.drying_position;
+}
+
+void settings_set_drying_position_no_save(int position)
+{
+    g_sys_param.drying_position = position;
+}
+
+void settings_flush_drying_position(void)
+{
+    settings_write_parameter_to_nvs();
+}
+
+void settings_set_tea_temperature(uint8_t tea_index, uint8_t temperature)
+{
+    if (tea_index < MAX_TEA_TYPES && temperature >= 75 && temperature <= 100) {
+        g_sys_param.tea_params[tea_index].temperature = temperature;
+        settings_write_parameter_to_nvs();
+    }
+}
+
+uint8_t settings_get_tea_temperature(uint8_t tea_index)
+{
+    if (tea_index < MAX_TEA_TYPES) {
+        return g_sys_param.tea_params[tea_index].temperature;
+    }
+    return 100;  // Default fallback
+}
+
+void settings_set_tea_infusion_time(uint8_t tea_index, uint16_t seconds)
+{
+    if (tea_index < MAX_TEA_TYPES && seconds < 900) {  // Max 14:59
+        g_sys_param.tea_params[tea_index].infusion_time = seconds;
+        settings_write_parameter_to_nvs();
+    }
+}
+
+uint16_t settings_get_tea_infusion_time(uint8_t tea_index)
+{
+    if (tea_index < MAX_TEA_TYPES) {
+        return g_sys_param.tea_params[tea_index].infusion_time;
+    }
+    return 180;  // Default 3 minutes
+}
+
+void settings_set_tea_temperature_no_save(uint8_t tea_index, uint8_t temperature)
+{
+    if (tea_index < MAX_TEA_TYPES && temperature >= 75 && temperature <= 100) {
+        g_sys_param.tea_params[tea_index].temperature = temperature;
+    }
+}
+
+void settings_set_tea_infusion_time_no_save(uint8_t tea_index, uint16_t seconds)
+{
+    if (tea_index < MAX_TEA_TYPES && seconds < 900) {  // Max 14:59
+        g_sys_param.tea_params[tea_index].infusion_time = seconds;
+    }
+}
+
+void settings_flush_tea_params(void)
+{
+    settings_write_parameter_to_nvs();
 }

@@ -18,7 +18,7 @@ void ui_event_MainScreen(lv_event_t * e)
     lv_event_code_t event_code = lv_event_get_code(e);
 
     if(event_code == LV_EVENT_CLICKED) {
-        _ui_screen_change(&ui_TeaScreen, LV_SCR_LOAD_ANIM_NONE, 500, 0, &ui_TeaScreen_screen_init);
+        nextTeaScreen(e);
     }
     if(event_code == LV_EVENT_SCREEN_LOADED) {
         onMainScreen(e);

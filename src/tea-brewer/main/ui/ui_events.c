@@ -4,6 +4,90 @@
 // Project name: SquareLine_Project
 
 #include "ui.h"
+#include "../settings.h"
+#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
+
+// Define the screen state variable
+ui_screen_state_t ui_screen_state = {0};
+
+// Timer for batched NVS writes
+static TimerHandle_t drying_position_save_timer = NULL;
+static bool position_changed = false;
+
+// Timer for tea parameters
+static TimerHandle_t tea_params_save_timer = NULL;
+static bool tea_params_changed = false;
+uint8_t current_tea_index = 0;  // Currently selected tea (0 = first tea)
+
+// Tea names array
+static const char* tea_names[MAX_TEA_TYPES] = {
+    "Green Tea",
+    "Black Tea",
+    "Herbal Tea",
+    "Fruit Tea",
+    "White Tea",
+    "Functional Tea"
+};
+
+// Tea colors (RGB hex values)
+static const uint32_t tea_colors[MAX_TEA_TYPES] = {
+    0x92A202,  // Green Tea
+    0xCE9958,  // Black Tea
+    0xE7C789,  // Herbal Tea
+    0xD76C6C,  // Fruit Tea
+    0xC4BCB5,  // White Tea
+    0xE9D257   // Functional Tea
+};
+
+// Timer callback to save drying position to NVS
+static void drying_position_save_timer_callback(TimerHandle_t xTimer)
+{
+	// Just set flag - actual save will happen in check_and_save_pending_nvs()
+	position_changed = true;
+}
+
+// Timer callback to save tea parameters to NVS
+static void tea_params_save_timer_callback(TimerHandle_t xTimer)
+{
+	// Just set flag - actual save will happen in check_and_save_pending_nvs()
+	tea_params_changed = true;
+}
+
+// Call this function periodically (e.g., from screen load events) to save pending changes
+void check_and_save_pending_nvs(void)
+{
+	if (position_changed) {
+		settings_flush_drying_position();
+		position_changed = false;
+	}
+	
+	if (tea_params_changed) {
+		settings_flush_tea_params();
+		tea_params_changed = false;
+	}
+}
+
+// Helper function to update tea screen label
+void update_tea_screen_label(void)
+{
+	extern lv_obj_t * ui_TeaName;
+	if (ui_TeaName && current_tea_index < MAX_TEA_TYPES) {
+		lv_label_set_text(ui_TeaName, tea_names[current_tea_index]);
+	}
+}
+
+// Helper function to update tea color theme
+void update_tea_color(void)
+{
+	if (current_tea_index < MAX_TEA_TYPES) {
+		// Cast away const to modify the theme color
+		ui_theme_variable_t *color_ptr = (ui_theme_variable_t *)_ui_theme_color_teacolor;
+		color_ptr[0] = tea_colors[current_tea_index];
+		_ui_theme_set_variable_styles(UI_VARIABLE_STYLES_MODE_FOLLOW);
+	}
+}
 
 void checkPot(lv_event_t * e)
 {
@@ -17,7 +101,28 @@ void stopBrewing(lv_event_t * e)
 
 void nextTeaScreen(lv_event_t * e)
 {
-	// Your code here
+	// If on main screen, go to tea 0
+	if (ui_screen_state.current_screen == UI_SCREEN_MAIN) {
+		current_tea_index = 0;
+		extern lv_obj_t * ui_TeaScreen;
+		if (ui_TeaScreen) {
+			_ui_screen_change(&ui_TeaScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeaScreen_screen_init);
+		}
+		return;
+	}
+	
+	// Increase tea index
+	if (current_tea_index < MAX_TEA_TYPES - 1) {
+		current_tea_index++;
+		update_tea_screen_label();
+		update_tea_color();
+	} else {
+		// If at last tea, go to settings screen
+		extern lv_obj_t * ui_SettingsScreen;
+		if (ui_SettingsScreen) {
+			_ui_screen_change(&ui_SettingsScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_SettingsScreen_screen_init);
+		}
+	}
 }
 
 void changeScreenToTeaPropertiesScreen(lv_event_t * e)
@@ -32,12 +137,64 @@ void changeTeaTemperature(lv_event_t * e)
 
 void changeInfusionTimeSecond(lv_event_t * e)
 {
-	// Your code here
+	lv_obj_t * roller = lv_event_get_target(e);
+	if (roller) {
+		uint16_t selected_seconds = lv_roller_get_selected(roller);
+		
+		// Get current infusion time and update only seconds
+		uint16_t current_time = settings_get_tea_infusion_time(current_tea_index);
+		uint16_t minutes = current_time / 60;
+		uint16_t new_time = (minutes * 60) + selected_seconds;
+		
+		settings_set_tea_infusion_time_no_save(current_tea_index, new_time);
+		tea_params_changed = true;
+		
+		// Create or reset timer
+		if (tea_params_save_timer == NULL) {
+			tea_params_save_timer = xTimerCreate(
+				"TeaParamsSave",
+				pdMS_TO_TICKS(10000),
+				pdFALSE,
+				0,
+				tea_params_save_timer_callback
+			);
+		}
+		
+		if (tea_params_save_timer != NULL) {
+			xTimerReset(tea_params_save_timer, 0);
+		}
+	}
 }
 
 void changeInfusionTimeMinute(lv_event_t * e)
 {
-	// Your code here
+	lv_obj_t * roller = lv_event_get_target(e);
+	if (roller) {
+		uint16_t selected_minutes = lv_roller_get_selected(roller);
+		
+		// Get current infusion time and update only minutes
+		uint16_t current_time = settings_get_tea_infusion_time(current_tea_index);
+		uint16_t seconds = current_time % 60;
+		uint16_t new_time = (selected_minutes * 60) + seconds;
+		
+		settings_set_tea_infusion_time_no_save(current_tea_index, new_time);
+		tea_params_changed = true;
+		
+		// Create or reset timer
+		if (tea_params_save_timer == NULL) {
+			tea_params_save_timer = xTimerCreate(
+				"TeaParamsSave",
+				pdMS_TO_TICKS(10000),
+				pdFALSE,
+				0,
+				tea_params_save_timer_callback
+			);
+		}
+		
+		if (tea_params_save_timer != NULL) {
+			xTimerReset(tea_params_save_timer, 0);
+		}
+	}
 }
 
 void ReturnToTeaScreen(lv_event_t * e)
@@ -57,22 +214,86 @@ void startBrewing(lv_event_t * e)
 
 void changeBrewingTeaTemperature(lv_event_t * e)
 {
-	// Your code here
+	lv_obj_t * roller = lv_event_get_target(e);
+	if (roller) {
+		uint16_t selected = lv_roller_get_selected(roller);
+		// Temperature options: 75, 80, 85, 90, 95, 100
+		uint8_t temperature = 75 + (selected * 5);
+		settings_set_tea_temperature_no_save(current_tea_index, temperature);
+		tea_params_changed = true;
+		
+		// Create or reset timer for delayed NVS write (10 seconds)
+		if (tea_params_save_timer == NULL) {
+			tea_params_save_timer = xTimerCreate(
+				"TeaParamsSave",
+				pdMS_TO_TICKS(10000),  // 10 seconds
+				pdFALSE,  // One-shot timer
+				0,
+				tea_params_save_timer_callback
+			);
+		}
+		
+		if (tea_params_save_timer != NULL) {
+			xTimerReset(tea_params_save_timer, 0);
+		}
+	}
 }
 
 void changeDryingTime(lv_event_t * e)
 {
-	// Your code here
+	lv_obj_t * roller = lv_event_get_target(e);
+	if (roller) {
+		uint16_t selected = lv_roller_get_selected(roller);
+		settings_set_drying_time((uint8_t)selected);
+	}
 }
 
 void dryingPositionUp(lv_event_t * e)
 {
-	// Your code here
+	int current_position = settings_get_drying_position();
+	current_position++;
+	settings_set_drying_position_no_save(current_position);
+	position_changed = true;
+	
+	// Create or reset timer for delayed NVS write (10 seconds)
+	if (drying_position_save_timer == NULL) {
+		drying_position_save_timer = xTimerCreate(
+			"DryingPosSave",
+			pdMS_TO_TICKS(10000),  // 10 seconds
+			pdFALSE,  // One-shot timer
+			0,
+			drying_position_save_timer_callback
+		);
+	}
+	
+	if (drying_position_save_timer != NULL) {
+		// Reset timer (restart the 10-second countdown)
+		xTimerReset(drying_position_save_timer, 0);
+	}
 }
 
 void dryingPositionDown(lv_event_t * e)
 {
-	// Your code here
+	int current_position = settings_get_drying_position();
+	current_position--;
+	settings_set_drying_position_no_save(current_position);
+	position_changed = true;
+		
+	// Create or reset timer for delayed NVS write (10 seconds)
+	if (drying_position_save_timer == NULL) {
+		drying_position_save_timer = xTimerCreate(
+			"DryingPosSave",
+			pdMS_TO_TICKS(10000),  // 10 seconds
+			pdFALSE,  // One-shot timer
+			0,
+			drying_position_save_timer_callback
+		);
+	}
+	
+	if (drying_position_save_timer != NULL) {
+		// Reset timer (restart the 10-second countdown)
+		xTimerReset(drying_position_save_timer, 0);
+	}
 }
 
 void changeSchedulerTemperature(lv_event_t * e)
@@ -102,50 +323,97 @@ void stopScheduledBrew(lv_event_t * e)
 
 void onMainScreen(lv_event_t * e)
 {
-	// Your code here
+	ui_screen_state.current_screen = UI_SCREEN_MAIN;
+	check_and_save_pending_nvs();
 }
 
 void onTeaScreen(lv_event_t * e)
 {
-	// Your code here
+	ui_screen_state.current_screen = UI_SCREEN_TEA;
+	check_and_save_pending_nvs();
+	update_tea_screen_label();
+	update_tea_color();
 }
 
 void onTeapotScreen(lv_event_t * e)
 {
-	// Your code here
+	ui_screen_state.current_screen = UI_SCREEN_TEAPOT;
+	check_and_save_pending_nvs();
 }
 
 void onBrewInfuseScreen(lv_event_t * e)
 {
-	// Your code here
+	ui_screen_state.current_screen = UI_SCREEN_BREW_INFUSE;
+	check_and_save_pending_nvs();
 }
 
 void onErrorScreen(lv_event_t * e)
 {
+	ui_screen_state.current_screen = UI_SCREEN_ERROR;
 	// Your code here
 }
 
 void onTeaPropertieScreen(lv_event_t * e)
 {
-	// Your code here
+	ui_screen_state.current_screen = UI_SCREEN_TEA_PROPERTIES;
+	check_and_save_pending_nvs();
+	update_tea_color();
+	
+	// Load tea parameters from NVS for current tea
+	uint8_t temperature = settings_get_tea_temperature(current_tea_index);
+	uint16_t infusion_time = settings_get_tea_infusion_time(current_tea_index);
+	
+	// Update temperature roller (75, 80, 85, 90, 95, 100)
+	extern lv_obj_t * ui_Roller1;
+	if (ui_Roller1) {
+		uint16_t temp_index = (temperature - 75) / 5;
+		if (temp_index > 5) temp_index = 5;  // Cap at 100°C
+		lv_roller_set_selected(ui_Roller1, temp_index, LV_ANIM_OFF);
+	}
+	
+	// Update infusion time rollers
+	uint16_t minutes = infusion_time / 60;
+	uint16_t seconds = infusion_time % 60;
+	
+	extern lv_obj_t * ui_Roller2;  // Minutes roller
+	if (ui_Roller2) {
+		if (minutes > 14) minutes = 14;  // Cap at 14 minutes
+		lv_roller_set_selected(ui_Roller2, minutes, LV_ANIM_OFF);
+	}
+	
+	extern lv_obj_t * ui_Roller4;  // Seconds roller
+	if (ui_Roller4) {
+		lv_roller_set_selected(ui_Roller4, seconds, LV_ANIM_OFF);
+	}
 }
 
 void onBrewNowOrSchedulerScreen(lv_event_t * e)
 {
-	// Your code here
+	ui_screen_state.current_screen = UI_SCREEN_BREW_NOW_OR_SCHEDULER;
+	check_and_save_pending_nvs();
 }
 
 void onSettingsScreen(lv_event_t * e)
 {
-	// Your code here
+	ui_screen_state.current_screen = UI_SCREEN_SETTINGS;
+	check_and_save_pending_nvs();
+	
+	// Load drying time from NVS and update roller
+	extern lv_obj_t * ui_Roller5;
+	if (ui_Roller5) {
+		uint8_t drying_time = settings_get_drying_time();
+		lv_roller_set_selected(ui_Roller5, drying_time, LV_ANIM_OFF);
+	}
 }
 
 void onSchedulerScreen(lv_event_t * e)
 {
-	// Your code here
+	ui_screen_state.current_screen = UI_SCREEN_SCHEDULER;
+	check_and_save_pending_nvs();
 }
 
 void onScheduledScreen(lv_event_t * e)
 {
+	ui_screen_state.current_screen = UI_SCREEN_SCHEDULED;
 	// Your code here
 }
