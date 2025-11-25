@@ -16,7 +16,10 @@ extern "C" {
 #include "ui_events.h"
 #include "ui_theme_manager.h"
 #include "ui_themes.h"
+#include "../uart_comm.h"
 
+// Max tea types
+#define MAX_TEA_TYPES 6
 
 ///////////////////// SCREENS ////////////////////
 
@@ -52,6 +55,9 @@ extern ui_screen_state_t ui_screen_state;
 #define UI_SCREEN_SCHEDULER 8
 #define UI_SCREEN_SCHEDULED 9
 
+// Tea colors array (extern declaration)
+extern const uint32_t tea_colors[MAX_TEA_TYPES];
+
 // EVENTS
 
 extern lv_obj_t * ui____initial_actions0;
@@ -72,6 +78,20 @@ LV_IMG_DECLARE(ui_img_287775719);    // assets/check-circle-outline-custom.png
 LV_IMG_DECLARE(ui_img_500202543);    // assets/close-circle-outline-custom.png
 LV_IMG_DECLARE(ui_img_726548789);    // assets/coffee-to-go-outline-custom.png
 LV_IMG_DECLARE(ui_img_231652102);    // assets/clock-outline-custom.png
+
+///////////////////// HELPER FUNCTIONS ////////////////////
+
+// Tea screen helpers
+void update_tea_screen_label(void);
+void update_tea_color(void);
+void update_tea_background(void);
+
+// Motor control helpers
+void ui_motor_move_to_drying_position(int32_t position);
+
+// Motor callbacks (called from app_main.c)
+void ui_on_home_complete(bool success);
+void ui_on_motor_status_update(const motor_status_t *status);
 
 // UI INIT
 void ui_init(void);

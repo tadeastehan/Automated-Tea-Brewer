@@ -26,13 +26,12 @@
 #include "demos/keypad_encoder/lv_demo_keypad_encoder.h"
 #include "iot_knob.h"
 
-#include "uart_api.h"
+#include "uart_comm.h"
+#include "ui/ui.h"
 
 static const char *TAG = "main";
 
 //NOTE: We currently have two versions of the 2.1 knob screen. If you have purchased the touch version, please set the macro definition below to 1
-
-
 
 #define MEMORY_MONITOR 0
 
@@ -42,26 +41,6 @@ static const char *TAG = "main";
 
 /**
  * @brief   Function to print the CPU usage of tasks over a given duration.
- *
- * This function will measure and print the CPU usage of tasks over a specified
- * number of ticks (i.e. real time stats). This is implemented by simply calling
- * uxTaskGetSystemState() twice separated by a delay, then calculating the
- * differences of task run times before and after the delay.
- *
- * @note    If any tasks are added or removed during the delay, the stats of
- *          those tasks will not be printed.
- * @note    This function should be called from a high priority task to minimize
- *          inaccuracies with delays.
- * @note    When running in dual core mode, each core will correspond to 50% of
- *          the run time.
- *
- * @param   xTicksToWait    Period of stats measurement
- *
- * @return
- *  - ESP_OK                Success
- *  - ESP_ERR_NO_MEM        Insufficient memory to allocated internal arrays
- *  - ESP_ERR_INVALID_SIZE  Insufficient array size for uxTaskGetSystemState. Trying increasing ARRAY_SIZE_OFFSET
- *  - ESP_ERR_INVALID_STATE Delay duration too short
  */
 static esp_err_t print_real_time_stats(TickType_t xTicksToWait)
 {
@@ -185,10 +164,103 @@ static void sys_monitor_start(void)
 }
 #endif
 
+/* ============================================
+   MOTOR COMMUNICATION CALLBACKS
+   ============================================ */
+
+/**
+ * @brief Callback when motor status is updated
+ */
+static void on_motor_status_update(const motor_status_t *status)
+{
+    ESP_LOGI(TAG, "Motor status: pos=%.1f%%, cal=%d, home=%d, connected=%d",
+             status->position_percent,
+             status->is_calibrated,
+             status->is_homed,
+             status->is_connected);
+    
+    /* Notify UI about status update */
+    ui_on_motor_status_update(status);
+}
+
+/**
+ * @brief Callback when motor move is complete
+ */
+static void on_motor_move_complete(bool success)
+{
+    if (success) {
+        ESP_LOGI(TAG, "Motor move completed");
+    } else {
+        ESP_LOGW(TAG, "Motor move failed");
+    }
+}
+
+/**
+ * @brief Callback when motor homing is complete
+ */
+static void on_motor_home_complete(bool success)
+{
+    if (success) {
+        ESP_LOGI(TAG, "Motor homing completed");
+    } else {
+        ESP_LOGW(TAG, "Motor homing failed");
+    }
+    
+    /* Notify UI - this will trigger pending move if needed */
+    ui_on_home_complete(success);
+}
+
+/**
+ * @brief Callback when motor calibration is complete
+ */
+static void on_motor_calibrate_complete(bool success)
+{
+    if (success) {
+        ESP_LOGI(TAG, "Motor calibration completed");
+    } else {
+        ESP_LOGW(TAG, "Motor calibration failed");
+    }
+}
+
+/**
+ * @brief Callback when motor error occurs
+ */
+static void on_motor_error(uint8_t error_code)
+{
+    ESP_LOGE(TAG, "Motor error: %d", error_code);
+}
+
+/**
+ * @brief Initialize motor communication with ESP #2
+ */
+static void motor_comm_init(void)
+{
+    ESP_LOGI(TAG, "Initializing motor communication...");
+    
+    /* Initialize UART communication */
+    esp_err_t ret = uart_comm_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize motor communication: %s", esp_err_to_name(ret));
+        return;
+    }
+    
+    /* Register callbacks */
+    uart_comm_set_status_callback(on_motor_status_update);
+    uart_comm_set_move_complete_callback(on_motor_move_complete);
+    uart_comm_set_home_complete_callback(on_motor_home_complete);
+    uart_comm_set_calibrate_complete_callback(on_motor_calibrate_complete);
+    uart_comm_set_error_callback(on_motor_error);
+    
+    /* Start communication task */
+    uart_comm_start();
+    
+    ESP_LOGI(TAG, "Motor communication initialized");
+}
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "Compile time: %s %s", __DATE__, __TIME__);
+    
     /* Initialize NVS. */
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -197,33 +269,37 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
     ESP_ERROR_CHECK(settings_read_parameter_from_nvs());
+    
+    /* Initialize display and touch */
     app_lcd_init();
     app_touch_init();
     lvgl_port_display_init();
 
+    /* Initialize input devices */
     knob_init(BSP_ENCODER_A, BSP_ENCODER_B);
     button_init(BSP_BTN_PRESS);
 
-
+    /* Initialize LVGL UI */
     ESP_LOGI(TAG, "Display LVGL demo");
     lvgl_port_lock(0);
-
-
     ui_init();
-    
-    // app_main_display();
-    // lv_demo_music();
-    // lv_demo_keypad_encoder();
     lvgl_port_unlock();
+
+    /* Initialize UI events (NVS save task) */
+    ui_events_init();
     
+    /* Turn on backlight */
     gpio_set_level(BSP_LCD_BL, 0);
 
+    /* Wait for display to stabilize */
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    uart_api_init();
-    uart_api_send("Hello from tea brewer!\r\n");
+    /* Initialize motor communication with ESP #2 (Motor Controller) */
+    motor_comm_init();
 
 #if MEMORY_MONITOR
     sys_monitor_start();
 #endif
+
+    ESP_LOGI(TAG, "Application started successfully");
 }

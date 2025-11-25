@@ -13,12 +13,8 @@ extern "C" {
 // Global tea index for navigation
 extern uint8_t current_tea_index;
 
-// Helper function for updating tea screen label
-void update_tea_screen_label(void);
-// Helper function for updating tea color theme
-void update_tea_color(void);
-// Helper function for updating tea screen background image
-void update_tea_background(void);
+// Initialize UI events - creates NVS save task
+void ui_events_init(void);
 
 void onMainScreen(lv_event_t * e);
 void nextTeaScreen(lv_event_t * e);
