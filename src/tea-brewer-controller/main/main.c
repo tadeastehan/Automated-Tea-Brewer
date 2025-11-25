@@ -1,21 +1,33 @@
 /**
  * @file main.c
- * @brief TMC2130 Stepper Motor Control Example for ESP-IDF
+ * @brief TMC2130 Sensorless Homing and Position Control for ESP-IDF
  * 
- * This example demonstrates basic motor control using the TMC2130 driver
- * including StealthChop, SpreadCycle, and StallGuard features.
+ * Serial Commands:
+ *   c        - Start calibration
+ *   0-100    - Move to percentage position
+ *   i        - Increase StallGuard threshold
+ *   d        - Decrease StallGuard threshold
+ *   s        - Show current status
+ *   h        - Show help
  */
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_system.h"
+#include "esp_console.h"
+#include "esp_vfs_dev.h"
 #include "driver/gptimer.h"
+#include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
+#include "esp_vfs_usb_serial_jtag.h"
 #include "tmc2130.h"
 
-static const char *TAG = "TMC2130_MAIN";
+static const char *TAG = "TMC2130_CTRL";
 
 /* User-provided pins */
 #define EN_PIN    2
@@ -29,51 +41,100 @@ static const char *TAG = "TMC2130_MAIN";
 #define MISO_PIN  20
 
 /* Motor configuration */
-#define MOTOR_RMS_CURRENT_MA    800     // RMS current in mA
-#define MOTOR_HOLD_MULTIPLIER   0.5f    // Hold current as fraction of run current
-#define MOTOR_MICROSTEPS        16      // Microsteps per full step
-#define MOTOR_R_SENSE           0.11f   // Sense resistor value in ohms
+#define MOTOR_RMS_CURRENT_MA    800
+#define MOTOR_HOLD_MULTIPLIER   0.5f
+#define MOTOR_MICROSTEPS        16
+#define MOTOR_R_SENSE           0.11f
 
 /* Stepping configuration */
-#define STEPS_PER_REV           200     // Full steps per revolution (1.8° motor)
-#define DEFAULT_SPEED_RPM       60      // Default speed in RPM
+#define STEPS_PER_REV           200
+
+/* Homing configuration */
+#define HOMING_SPEED_RPM        30
+#define NORMAL_SPEED_RPM        120
+#define STALL_DEBOUNCE_MS       50
+#define BACKOFF_STEPS           100
 
 /* Global handle */
 static tmc2130_handle_t tmc2130;
 static gptimer_handle_t step_timer = NULL;
+
+/* Motor state */
 static volatile bool motor_running = false;
 static volatile int32_t steps_remaining = 0;
 static volatile bool step_state = false;
+static volatile int32_t current_position = 0;
+static volatile bool direction_forward = true;
+
+/* Calibration data */
+static bool is_calibrated = false;
+static int32_t min_position = 0;
+static int32_t max_position = 0;
+static int32_t total_travel_steps = 0;
+
+/* StallGuard threshold - adjustable via serial */
+static int8_t stallguard_threshold = -6;
+
+/**
+ * @brief Initialize USB Serial JTAG for console (ESP32-C6)
+ */
+static void init_console(void)
+{
+    /* Disable buffering on stdin */
+    setvbuf(stdin, NULL, _IONBF, 0);
+    
+    /* Disable buffering on stdout */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    
+    /* Install USB Serial JTAG driver for interrupt-driven reads and writes */
+    usb_serial_jtag_driver_config_t usb_serial_config = {
+        .rx_buffer_size = 256,
+        .tx_buffer_size = 256,
+    };
+    ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_serial_config));
+    
+    /* Configure VFS to use USB Serial JTAG driver */
+    esp_vfs_usb_serial_jtag_use_driver();
+    
+    printf("\r\n");
+}
 
 /**
  * @brief Timer callback for generating step pulses
  */
 static bool IRAM_ATTR step_timer_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
 {
-    if (steps_remaining > 0 || steps_remaining == -1) {  // -1 = continuous
+    if (steps_remaining > 0 || steps_remaining == -1) {
         step_state = !step_state;
         gpio_set_level(STEP_PIN, step_state);
         
-        if (step_state && steps_remaining > 0) {
-            steps_remaining--;
+        if (step_state) {
+            if (steps_remaining > 0) {
+                steps_remaining--;
+            }
+            if (direction_forward) {
+                current_position++;
+            } else {
+                current_position--;
+            }
         }
     } else {
         motor_running = false;
         gptimer_stop(timer);
     }
     
-    return false;  // No need to yield
+    return false;
 }
 
 /**
- * @brief Initialize the step timer for precise stepping
+ * @brief Initialize the step timer
  */
 static esp_err_t init_step_timer(void)
 {
     gptimer_config_t timer_config = {
         .clk_src = GPTIMER_CLK_SRC_DEFAULT,
         .direction = GPTIMER_COUNT_UP,
-        .resolution_hz = 1000000,  // 1MHz, 1 tick = 1us
+        .resolution_hz = 1000000,
     };
     
     ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &step_timer));
@@ -96,14 +157,11 @@ static esp_err_t set_speed_rpm(uint32_t rpm)
         return ESP_ERR_INVALID_ARG;
     }
     
-    // Calculate step interval in microseconds
-    // steps_per_second = (rpm * STEPS_PER_REV * MOTOR_MICROSTEPS) / 60
-    // interval_us = 1000000 / steps_per_second / 2 (divide by 2 for toggle)
     uint32_t steps_per_second = (rpm * STEPS_PER_REV * MOTOR_MICROSTEPS) / 60;
-    uint32_t interval_us = 500000 / steps_per_second;  // Half period for toggle
+    uint32_t interval_us = 500000 / steps_per_second;
     
     if (interval_us < 10) {
-        interval_us = 10;  // Minimum 10us interval
+        interval_us = 10;
     }
     
     gptimer_alarm_config_t alarm_config = {
@@ -114,22 +172,41 @@ static esp_err_t set_speed_rpm(uint32_t rpm)
     
     ESP_ERROR_CHECK(gptimer_set_alarm_action(step_timer, &alarm_config));
     
-    ESP_LOGI(TAG, "Speed set to %lu RPM (interval: %lu us)", rpm, interval_us);
     return ESP_OK;
 }
 
 /**
- * @brief Move motor a specific number of steps
+ * @brief Set direction
  */
-static void move_steps(int32_t steps)
+static void set_direction(bool forward)
+{
+    direction_forward = forward;
+    gpio_set_level(DIR_PIN, forward ? 1 : 0);
+    vTaskDelay(pdMS_TO_TICKS(1));
+}
+
+/**
+ * @brief Start continuous movement
+ */
+static void start_continuous_movement(bool forward)
+{
+    set_direction(forward);
+    steps_remaining = -1;
+    motor_running = true;
+    
+    gptimer_set_raw_count(step_timer, 0);
+    gptimer_start(step_timer);
+}
+
+/**
+ * @brief Move specific number of steps (blocking)
+ */
+static void move_steps_blocking(int32_t steps)
 {
     if (steps == 0) return;
     
-    // Set direction
-    bool dir = (steps > 0);
-    tmc2130_set_direction(&tmc2130, dir);
-    gpio_set_level(DIR_PIN, dir);
-    vTaskDelay(pdMS_TO_TICKS(1));  // Direction setup time
+    bool forward = (steps > 0);
+    set_direction(forward);
     
     steps_remaining = (steps > 0) ? steps : -steps;
     motor_running = true;
@@ -137,29 +214,13 @@ static void move_steps(int32_t steps)
     gptimer_set_raw_count(step_timer, 0);
     gptimer_start(step_timer);
     
-    ESP_LOGI(TAG, "Moving %ld steps %s", steps, dir ? "CW" : "CCW");
+    while (motor_running) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
 }
 
 /**
- * @brief Move motor continuously
- */
-static void move_continuous(bool direction)
-{
-    tmc2130_set_direction(&tmc2130, direction);
-    gpio_set_level(DIR_PIN, direction);
-    vTaskDelay(pdMS_TO_TICKS(1));
-    
-    steps_remaining = -1;  // Continuous mode
-    motor_running = true;
-    
-    gptimer_set_raw_count(step_timer, 0);
-    gptimer_start(step_timer);
-    
-    ESP_LOGI(TAG, "Continuous rotation %s", direction ? "CW" : "CCW");
-}
-
-/**
- * @brief Stop motor movement
+ * @brief Stop motor
  */
 static void stop_motor(void)
 {
@@ -167,216 +228,445 @@ static void stop_motor(void)
     motor_running = false;
     gptimer_stop(step_timer);
     gpio_set_level(STEP_PIN, 0);
-    
-    ESP_LOGI(TAG, "Motor stopped");
 }
 
 /**
- * @brief Wait for movement to complete
+ * @brief Check for stall condition with debouncing
  */
-static void wait_for_movement(void)
+static bool check_stall(void)
 {
-    while (motor_running) {
-        vTaskDelay(pdMS_TO_TICKS(10));
+    static int64_t last_stall_time = 0;
+    
+    uint16_t sg_result = tmc2130_get_sg_result(&tmc2130);
+    bool stall_flag = tmc2130_is_stallguard(&tmc2130);
+    
+    static int log_counter = 0;
+    if (++log_counter >= 20) {
+        printf("SG: %u %s\r\n", sg_result, stall_flag ? "STALL" : "");
+        log_counter = 0;
     }
-}
-
-/**
- * @brief Print driver status
- */
-static void print_driver_status(void)
-{
-    uint32_t status;
-    if (tmc2130_get_drv_status(&tmc2130, &status) == ESP_OK) {
-        ESP_LOGI(TAG, "DRV_STATUS: 0x%08lX", status);
-        ESP_LOGI(TAG, "  SG_RESULT: %u", (unsigned int)(status & 0x3FF));
-        ESP_LOGI(TAG, "  fsactive: %s", (status & (1 << 15)) ? "yes" : "no");
-        ESP_LOGI(TAG, "  CS_ACTUAL: %u", (unsigned int)((status >> 16) & 0x1F));
-        ESP_LOGI(TAG, "  stallGuard: %s", (status & (1 << 24)) ? "STALL" : "ok");
-        ESP_LOGI(TAG, "  ot: %s", (status & (1 << 25)) ? "OVERTEMP" : "ok");
-        ESP_LOGI(TAG, "  otpw: %s", (status & (1 << 26)) ? "warning" : "ok");
-        ESP_LOGI(TAG, "  s2ga: %s", (status & (1 << 27)) ? "short" : "ok");
-        ESP_LOGI(TAG, "  s2gb: %s", (status & (1 << 28)) ? "short" : "ok");
-        ESP_LOGI(TAG, "  ola: %s", (status & (1 << 29)) ? "open" : "ok");
-        ESP_LOGI(TAG, "  olb: %s", (status & (1 << 30)) ? "open" : "ok");
-        ESP_LOGI(TAG, "  stst: %s", (status & (1UL << 31)) ? "standstill" : "moving");
+    
+    if (stall_flag || sg_result == 0) {
+        int64_t now = esp_timer_get_time() / 1000;
+        if (last_stall_time == 0) {
+            last_stall_time = now;
+        } else if ((now - last_stall_time) >= STALL_DEBOUNCE_MS) {
+            last_stall_time = 0;
+            return true;
+        }
+    } else {
+        last_stall_time = 0;
     }
+    
+    return false;
 }
 
 /**
- * @brief Configure TMC2130 for StealthChop mode (quiet operation)
+ * @brief Configure driver for StallGuard homing
  */
-static void configure_stealthchop(void)
+static void configure_for_homing(void)
 {
-    ESP_LOGI(TAG, "Configuring StealthChop mode...");
+    printf("Configuring for homing (SGT: %d)...\r\n", stallguard_threshold);
     
-    // Enable StealthChop
-    tmc2130_set_en_pwm_mode(&tmc2130, true);
-    
-    // Configure PWMCONF for StealthChop
-    tmc2130_set_pwm_autoscale(&tmc2130, true);
-    tmc2130_set_pwm_freq(&tmc2130, 1);      // PWM frequency: 2/683 fclk
-    tmc2130_set_pwm_ampl(&tmc2130, 255);    // PWM amplitude
-    tmc2130_set_pwm_grad(&tmc2130, 5);      // PWM gradient
-    
-    // Set threshold for switching to SpreadCycle at high speeds
-    tmc2130_set_tpwmthrs(&tmc2130, 500);    // Switch threshold
-    
-    ESP_LOGI(TAG, "StealthChop configured");
-}
-
-/**
- * @brief Configure TMC2130 for SpreadCycle mode (high torque)
- */
-static void configure_spreadcycle(void)
-{
-    ESP_LOGI(TAG, "Configuring SpreadCycle mode...");
-    
-    // Disable StealthChop (use SpreadCycle)
     tmc2130_set_en_pwm_mode(&tmc2130, false);
-    
-    // Configure CHOPCONF for SpreadCycle
-    tmc2130_set_toff(&tmc2130, 4);          // Off time: 4
-    tmc2130_set_hstrt(&tmc2130, 4);         // Hysteresis start: 4
-    tmc2130_set_hend(&tmc2130, 1);          // Hysteresis end: 1
-    tmc2130_set_tbl(&tmc2130, 2);           // Blanking time: 2
-    tmc2130_set_chm(&tmc2130, false);       // SpreadCycle mode
-    
-    ESP_LOGI(TAG, "SpreadCycle configured");
-}
-
-/**
- * @brief Configure StallGuard for sensorless homing
- */
-static void configure_stallguard(int8_t threshold)
-{
-    ESP_LOGI(TAG, "Configuring StallGuard with threshold: %d", threshold);
-    
-    // Configure CoolStep thresholds
-    tmc2130_set_tcoolthrs(&tmc2130, 0xFFFFF);  // Enable StallGuard at all speeds
-    
-    // Set StallGuard threshold
-    tmc2130_set_sgt(&tmc2130, threshold);
-    
-    // Enable StallGuard output on DIAG1
+    tmc2130_set_toff(&tmc2130, 4);
+    tmc2130_set_hstrt(&tmc2130, 4);
+    tmc2130_set_hend(&tmc2130, 1);
+    tmc2130_set_tbl(&tmc2130, 2);
+    tmc2130_set_chm(&tmc2130, false);
+    tmc2130_set_tcoolthrs(&tmc2130, 0xFFFFF);
+    tmc2130_set_sgt(&tmc2130, stallguard_threshold);
+    tmc2130_set_sfilt(&tmc2130, true);
     tmc2130_set_diag1_stall(&tmc2130, true);
     tmc2130_set_diag1_pushpull(&tmc2130, true);
-    
-    // Optional: Enable StallGuard filter
-    tmc2130_set_sfilt(&tmc2130, true);
-    
-    ESP_LOGI(TAG, "StallGuard configured");
 }
 
 /**
- * @brief Demo: Basic movement
+ * @brief Configure driver for normal operation
  */
-static void demo_basic_movement(void)
+static void configure_for_normal_operation(void)
 {
-    ESP_LOGI(TAG, "=== Demo: Basic Movement ===");
+    printf("Configuring for normal operation...\r\n");
     
-    set_speed_rpm(60);
-    
-    // Move one full revolution clockwise
-    ESP_LOGI(TAG, "Moving 1 revolution CW...");
-    move_steps(STEPS_PER_REV * MOTOR_MICROSTEPS);
-    wait_for_movement();
-    vTaskDelay(pdMS_TO_TICKS(500));
-    
-    // Move one full revolution counter-clockwise
-    ESP_LOGI(TAG, "Moving 1 revolution CCW...");
-    move_steps(-(STEPS_PER_REV * MOTOR_MICROSTEPS));
-    wait_for_movement();
-    vTaskDelay(pdMS_TO_TICKS(500));
-    
-    print_driver_status();
+    tmc2130_set_en_pwm_mode(&tmc2130, true);
+    tmc2130_set_pwm_autoscale(&tmc2130, true);
+    tmc2130_set_pwm_freq(&tmc2130, 1);
+    tmc2130_set_pwm_ampl(&tmc2130, 255);
+    tmc2130_set_pwm_grad(&tmc2130, 5);
+    tmc2130_set_diag1_stall(&tmc2130, false);
 }
 
 /**
- * @brief Demo: Speed ramping
+ * @brief Find endpoint by moving until stall
  */
-static void demo_speed_ramp(void)
+static int32_t find_endpoint(bool forward)
 {
-    ESP_LOGI(TAG, "=== Demo: Speed Ramping ===");
+    printf("Finding %s endpoint...\r\n", forward ? "forward" : "reverse");
     
-    // Start slow and increase speed
-    for (int rpm = 10; rpm <= 200; rpm += 10) {
-        set_speed_rpm(rpm);
-        move_continuous(true);
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
+    int32_t start_position = current_position;
     
-    // Decrease speed
-    for (int rpm = 200; rpm >= 10; rpm -= 10) {
-        set_speed_rpm(rpm);
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
+    set_speed_rpm(HOMING_SPEED_RPM);
+    start_continuous_movement(forward);
     
-    stop_motor();
-    vTaskDelay(pdMS_TO_TICKS(500));
-}
-
-/**
- * @brief Demo: Compare StealthChop vs SpreadCycle
- */
-static void demo_chopper_modes(void)
-{
-    ESP_LOGI(TAG, "=== Demo: Chopper Modes ===");
+    vTaskDelay(pdMS_TO_TICKS(100));
     
-    set_speed_rpm(60);
-    
-    // StealthChop mode (quiet)
-    ESP_LOGI(TAG, "StealthChop mode (listen for quiet operation)...");
-    configure_stealthchop();
-    move_steps(STEPS_PER_REV * MOTOR_MICROSTEPS * 2);
-    wait_for_movement();
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    
-    // SpreadCycle mode (more torque, more noise)
-    ESP_LOGI(TAG, "SpreadCycle mode (more torque)...");
-    configure_spreadcycle();
-    move_steps(STEPS_PER_REV * MOTOR_MICROSTEPS * 2);
-    wait_for_movement();
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    
-    // Return to StealthChop
-    configure_stealthchop();
-}
-
-/**
- * @brief Demo: StallGuard monitoring
- */
-static void demo_stallguard(void)
-{
-    ESP_LOGI(TAG, "=== Demo: StallGuard Monitoring ===");
-    
-    // Must use SpreadCycle for StallGuard
-    configure_spreadcycle();
-    configure_stallguard(10);  // Threshold: 10
-    
-    set_speed_rpm(30);
-    move_continuous(true);
-    
-    // Monitor StallGuard value
-    for (int i = 0; i < 50; i++) {
-        uint16_t sg_result = tmc2130_get_sg_result(&tmc2130);
-        bool stall = tmc2130_is_stallguard(&tmc2130);
-        
-        ESP_LOGI(TAG, "SG_RESULT: %u %s", sg_result, stall ? "STALL!" : "");
-        
-        if (stall) {
-            ESP_LOGW(TAG, "Stall detected! Stopping motor.");
+    while (motor_running) {
+        if (check_stall()) {
             stop_motor();
+            printf("Stall detected at position: %ld\r\n", (long)current_position);
             break;
         }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    
+    int32_t steps_moved = current_position - start_position;
+    if (steps_moved < 0) steps_moved = -steps_moved;
+    
+    return steps_moved;
+}
+
+/**
+ * @brief Perform sensorless homing calibration
+ */
+static bool perform_calibration(void)
+{
+    printf("\r\n");
+    printf("========================================\r\n");
+    printf("   SENSORLESS HOMING CALIBRATION\r\n");
+    printf("   StallGuard Threshold: %d\r\n", stallguard_threshold);
+    printf("========================================\r\n");
+    printf("\r\n");
+    
+    is_calibrated = false;
+    
+    configure_for_homing();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    printf("Step 1: Finding first endpoint...\r\n");
+    find_endpoint(false);
+    
+    printf("Backing off...\r\n");
+    move_steps_blocking(BACKOFF_STEPS);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    
+    find_endpoint(false);
+    
+    current_position = 0;
+    min_position = 0;
+    printf("Endpoint 1 set as position 0\r\n");
+    
+    move_steps_blocking(BACKOFF_STEPS);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    printf("Step 2: Finding second endpoint...\r\n");
+    find_endpoint(true);
+    
+    max_position = current_position;
+    
+    printf("Backing off...\r\n");
+    move_steps_blocking(-BACKOFF_STEPS);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    
+    find_endpoint(true);
+    max_position = current_position;
+    
+    total_travel_steps = max_position - min_position;
+    
+    printf("\r\n");
+    printf("========================================\r\n");
+    printf("   CALIBRATION COMPLETE\r\n");
+    printf("========================================\r\n");
+    printf("Min position:  %ld steps\r\n", (long)min_position);
+    printf("Max position:  %ld steps\r\n", (long)max_position);
+    printf("Total travel:  %ld steps\r\n", (long)total_travel_steps);
+    printf("Travel (mm):   %.2f mm @ 80 steps/mm\r\n", (float)total_travel_steps / 80.0f);
+    printf("========================================\r\n");
+    printf("\r\n");
+    
+    move_steps_blocking(-BACKOFF_STEPS);
+    
+    configure_for_normal_operation();
+    set_speed_rpm(NORMAL_SPEED_RPM);
+    
+    is_calibrated = true;
+    return true;
+}
+
+/**
+ * @brief Move to absolute position
+ */
+static bool move_to_position(int32_t target_position)
+{
+    if (!is_calibrated) {
+        printf("Error: Not calibrated! Press 'c' to calibrate.\r\n");
+        return false;
+    }
+    
+    int32_t safe_min = min_position + BACKOFF_STEPS;
+    int32_t safe_max = max_position - BACKOFF_STEPS;
+    
+    if (target_position < safe_min) {
+        printf("Clamping to safe min: %ld\r\n", (long)safe_min);
+        target_position = safe_min;
+    }
+    if (target_position > safe_max) {
+        printf("Clamping to safe max: %ld\r\n", (long)safe_max);
+        target_position = safe_max;
+    }
+    
+    int32_t steps_to_move = target_position - current_position;
+    
+    printf("Moving: %ld -> %ld (delta: %ld)\r\n", 
+           (long)current_position, (long)target_position, (long)steps_to_move);
+    
+    if (steps_to_move == 0) {
+        printf("Already at target.\r\n");
+        return true;
+    }
+    
+    move_steps_blocking(steps_to_move);
+    
+    printf("Done. Position: %ld\r\n", (long)current_position);
+    return true;
+}
+
+/**
+ * @brief Move to percentage of travel range
+ */
+static bool move_to_percent(float percent)
+{
+    if (!is_calibrated) {
+        printf("Error: Not calibrated! Press 'c' to calibrate.\r\n");
+        return false;
+    }
+    
+    if (percent < 0.0f) percent = 0.0f;
+    if (percent > 100.0f) percent = 100.0f;
+    
+    int32_t usable_min = min_position + BACKOFF_STEPS;
+    int32_t usable_max = max_position - BACKOFF_STEPS;
+    int32_t usable_range = usable_max - usable_min;
+    
+    int32_t target = usable_min + (int32_t)((float)usable_range * percent / 100.0f);
+    
+    printf("Moving to %.1f%%...\r\n", percent);
+    return move_to_position(target);
+}
+
+/**
+ * @brief Get current position as percentage
+ */
+static float get_position_percent(void)
+{
+    if (!is_calibrated || total_travel_steps == 0) {
+        return 0.0f;
+    }
+    
+    int32_t usable_min = min_position + BACKOFF_STEPS;
+    int32_t usable_max = max_position - BACKOFF_STEPS;
+    int32_t usable_range = usable_max - usable_min;
+    
+    if (usable_range <= 0) return 0.0f;
+    
+    float percent = ((float)(current_position - usable_min) / (float)usable_range) * 100.0f;
+    if (percent < 0.0f) percent = 0.0f;
+    if (percent > 100.0f) percent = 100.0f;
+    
+    return percent;
+}
+
+/**
+ * @brief Print current status
+ */
+static void print_status(void)
+{
+    printf("\r\n");
+    printf("=== STATUS ===\r\n");
+    printf("Calibrated:     %s\r\n", is_calibrated ? "YES" : "NO");
+    printf("SGT Threshold:  %d\r\n", stallguard_threshold);
+    printf("Position:       %ld steps\r\n", (long)current_position);
+    
+    if (is_calibrated) {
+        printf("Position %%:     %.1f%%\r\n", get_position_percent());
+        printf("Range:          %ld to %ld steps\r\n", (long)min_position, (long)max_position);
+        printf("Total travel:   %ld steps\r\n", (long)total_travel_steps);
+    }
+    
+    uint32_t status;
+    if (tmc2130_get_drv_status(&tmc2130, &status) == ESP_OK) {
+        printf("Motor:          %s\r\n", (status & (1UL << 31)) ? "STANDSTILL" : "MOVING");
+        printf("SG Result:      %lu\r\n", (unsigned long)(status & 0x3FF));
+    }
+    printf("==============\r\n");
+    printf("\r\n");
+}
+
+/**
+ * @brief Print help message
+ */
+static void print_help(void)
+{
+    printf("\r\n");
+    printf("=== TMC2130 CONTROL COMMANDS ===\r\n");
+    printf("  c       - Start calibration\r\n");
+    printf("  0-100   - Move to percentage (e.g., '50' for 50%%)\r\n");
+    printf("  i       - Increase StallGuard threshold (+1)\r\n");
+    printf("  d       - Decrease StallGuard threshold (-1)\r\n");
+    printf("  s       - Show current status\r\n");
+    printf("  h       - Show this help\r\n");
+    printf("  r       - Re-home (go to 0%%)\r\n");
+    printf("  m       - Go to middle (50%%)\r\n");
+    printf("  e       - Enable motor driver\r\n");
+    printf("  x       - Emergency stop / disable motor\r\n");
+    printf("  t       - Test StallGuard (show SG values)\r\n");
+    printf("================================\r\n");
+    printf("\r\n");
+}
+
+/**
+ * @brief Increase StallGuard threshold
+ */
+static void increase_sgt(void)
+{
+    if (stallguard_threshold < 63) {
+        stallguard_threshold++;
+        tmc2130_set_sgt(&tmc2130, stallguard_threshold);
+        printf("StallGuard threshold: %d\r\n", stallguard_threshold);
+    } else {
+        printf("StallGuard threshold at maximum (63)\r\n");
+    }
+}
+
+/**
+ * @brief Decrease StallGuard threshold
+ */
+static void decrease_sgt(void)
+{
+    if (stallguard_threshold > -64) {
+        stallguard_threshold--;
+        tmc2130_set_sgt(&tmc2130, stallguard_threshold);
+        printf("StallGuard threshold: %d\r\n", stallguard_threshold);
+    } else {
+        printf("StallGuard threshold at minimum (-64)\r\n");
+    }
+}
+
+/**
+ * @brief Test StallGuard - show live SG values
+ */
+static void test_stallguard(void)
+{
+    printf("\r\n");
+    printf("=== STALLGUARD TEST ===\r\n");
+    printf("Showing SG values for 5 seconds...\r\n");
+    printf("Move the motor manually to see values change.\r\n");
+    printf("\r\n");
+    
+    configure_for_homing();
+    
+    for (int i = 0; i < 50; i++) {
+        uint16_t sg = tmc2130_get_sg_result(&tmc2130);
+        bool stall = tmc2130_is_stallguard(&tmc2130);
         
+        printf("SG: %4u  %s\r\n", sg, stall ? "<-- STALL" : "");
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     
-    stop_motor();
+    configure_for_normal_operation();
+    printf("Test complete.\r\n\r\n");
+}
+
+/**
+ * @brief Process received command
+ */
+static void process_command(const char *cmd)
+{
+    if (strlen(cmd) == 0) {
+        return;
+    }
     
-    // Return to StealthChop
-    configure_stealthchop();
+    // Single character commands
+    if (strlen(cmd) == 1) {
+        switch (cmd[0]) {
+            case 'c':
+            case 'C':
+                perform_calibration();
+                break;
+                
+            case 'i':
+            case 'I':
+                increase_sgt();
+                break;
+                
+            case 'd':
+            case 'D':
+                decrease_sgt();
+                break;
+                
+            case 's':
+            case 'S':
+                print_status();
+                break;
+                
+            case 'h':
+            case 'H':
+            case '?':
+                print_help();
+                break;
+                
+            case 'r':
+            case 'R':
+                move_to_percent(0.0f);
+                break;
+                
+            case 'm':
+            case 'M':
+                move_to_percent(50.0f);
+                break;
+                
+            case 'e':
+            case 'E':
+                tmc2130_enable(&tmc2130);
+                printf("Motor enabled.\r\n");
+                break;
+                
+            case 'x':
+            case 'X':
+                stop_motor();
+                tmc2130_disable(&tmc2130);
+                printf("EMERGENCY STOP - Motor disabled.\r\n");
+                break;
+                
+            case 't':
+            case 'T':
+                test_stallguard();
+                break;
+                
+            default:
+                if (cmd[0] >= '0' && cmd[0] <= '9') {
+                    float percent = (float)(cmd[0] - '0') * 10.0f;
+                    move_to_percent(percent);
+                } else {
+                    printf("Unknown command: '%s'. Type 'h' for help.\r\n", cmd);
+                }
+                break;
+        }
+        return;
+    }
+    
+    // Multi-character commands - try to parse as number
+    char *endptr;
+    float value = strtof(cmd, &endptr);
+    
+    if (endptr != cmd && (*endptr == '\0' || *endptr == '\r' || *endptr == '\n')) {
+        if (value >= 0.0f && value <= 100.0f) {
+            move_to_percent(value);
+        } else {
+            printf("Position must be 0-100. Got: %.1f\r\n", value);
+        }
+    } else {
+        printf("Unknown command: '%s'. Type 'h' for help.\r\n", cmd);
+    }
 }
 
 /**
@@ -384,7 +674,7 @@ static void demo_stallguard(void)
  */
 static esp_err_t init_tmc2130(void)
 {
-    ESP_LOGI(TAG, "Initializing TMC2130...");
+    printf("Initializing TMC2130...\r\n");
     
     tmc2130_config_t config = {
         .spi_host = SPI2_HOST,
@@ -395,53 +685,81 @@ static esp_err_t init_tmc2130(void)
         .pin_en = EN_PIN,
         .pin_step = STEP_PIN,
         .pin_dir = DIR_PIN,
-        .spi_clock_speed_hz = 1000000,  // 1 MHz
+        .spi_clock_speed_hz = 1000000,
         .r_sense = MOTOR_R_SENSE,
     };
     
     esp_err_t ret = tmc2130_init(&tmc2130, &config);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize TMC2130: %s", esp_err_to_name(ret));
+        printf("Failed to initialize TMC2130: %s\r\n", esp_err_to_name(ret));
         return ret;
     }
     
-    // Test connection
     if (!tmc2130_test_connection(&tmc2130)) {
-        ESP_LOGW(TAG, "TMC2130 connection test failed - check wiring!");
+        printf("WARNING: TMC2130 connection test failed!\r\n");
+    } else {
+        printf("TMC2130 connected.\r\n");
     }
     
-    // Basic configuration
-    tmc2130_set_i_scale_analog(&tmc2130, false);    // Use internal reference
-    tmc2130_set_internal_rsense(&tmc2130, false);   // Use external sense resistors
-    
-    // Set current
+    tmc2130_set_i_scale_analog(&tmc2130, false);
+    tmc2130_set_internal_rsense(&tmc2130, false);
     tmc2130_set_rms_current(&tmc2130, MOTOR_RMS_CURRENT_MA, MOTOR_HOLD_MULTIPLIER);
-    
-    // Set microsteps
     tmc2130_set_microsteps(&tmc2130, MOTOR_MICROSTEPS);
-    tmc2130_set_intpol(&tmc2130, true);  // Interpolate to 256 microsteps
-    
-    // Configure chopper
+    tmc2130_set_intpol(&tmc2130, true);
     tmc2130_set_toff(&tmc2130, 4);
     tmc2130_set_tbl(&tmc2130, 2);
     tmc2130_set_hstrt(&tmc2130, 4);
     tmc2130_set_hend(&tmc2130, 1);
-    
-    // Enable StealthChop by default
-    configure_stealthchop();
-    
-    // Set power down delay
     tmc2130_set_tpowerdown(&tmc2130, 10);
+    tmc2130_set_sgt(&tmc2130, stallguard_threshold);
     
-    // Enable driver
     tmc2130_enable(&tmc2130);
     
-    ESP_LOGI(TAG, "TMC2130 initialization complete");
-    
-    // Print initial status
-    print_driver_status();
-    
+    printf("TMC2130 initialized.\r\n");
     return ESP_OK;
+}
+
+/**
+ * @brief Serial input task
+ */
+static void serial_task(void *pvParameters)
+{
+    char cmd_buffer[64];
+    int cmd_index = 0;
+    
+    printf("> ");
+    fflush(stdout);
+    
+    while (1) {
+        int c = getchar();
+        
+        if (c != EOF) {
+            if (c == '\r' || c == '\n') {
+                printf("\r\n");
+                cmd_buffer[cmd_index] = '\0';
+                
+                if (cmd_index > 0) {
+                    process_command(cmd_buffer);
+                }
+                
+                cmd_index = 0;
+                printf("> ");
+                fflush(stdout);
+            } else if (c == 127 || c == 8) {  // Backspace
+                if (cmd_index > 0) {
+                    cmd_index--;
+                    printf("\b \b");
+                    fflush(stdout);
+                }
+            } else if (c >= 32 && c < 127 && cmd_index < sizeof(cmd_buffer) - 1) {
+                cmd_buffer[cmd_index++] = (char)c;
+                putchar(c);
+                fflush(stdout);
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
 
 /**
@@ -449,45 +767,41 @@ static esp_err_t init_tmc2130(void)
  */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "TMC2130 Stepper Motor Control Example");
-    ESP_LOGI(TAG, "======================================");
+    // Initialize console FIRST
+    init_console();
+    
+    printf("\r\n");
+    printf("========================================\r\n");
+    printf("  TMC2130 Sensorless Homing Controller\r\n");
+    printf("  For ESP32-C6\r\n");
+    printf("========================================\r\n");
+    printf("\r\n");
     
     // Initialize step timer
     ESP_ERROR_CHECK(init_step_timer());
     
     // Initialize TMC2130
     if (init_tmc2130() != ESP_OK) {
-        ESP_LOGE(TAG, "TMC2130 initialization failed!");
+        printf("TMC2130 initialization failed!\r\n");
         return;
     }
     
-    // Wait for driver to stabilize
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Configure for normal operation initially
+    configure_for_normal_operation();
+    set_speed_rpm(NORMAL_SPEED_RPM);
     
-    // Run demos
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    // Print help
+    print_help();
+    
+    printf("Ready. Type 'c' to calibrate or 'h' for help.\r\n");
+    
+    // Create serial input task
+    xTaskCreate(serial_task, "serial_task", 4096, NULL, 5, NULL);
+    
+    // Main loop can do other things or just idle
     while (1) {
-        ESP_LOGI(TAG, "\n\n--- Starting Demo Sequence ---\n");
-        
-        // Demo 1: Basic movement
-        demo_basic_movement();
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        
-        // Demo 2: Speed ramping
-        demo_speed_ramp();
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        
-        // Demo 3: Chopper mode comparison
-        demo_chopper_modes();
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        
-        // Demo 4: StallGuard monitoring
-        demo_stallguard();
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        
-        // Print final status
-        print_driver_status();
-        
-        ESP_LOGI(TAG, "\n--- Demo sequence complete. Restarting in 5 seconds... ---\n");
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
