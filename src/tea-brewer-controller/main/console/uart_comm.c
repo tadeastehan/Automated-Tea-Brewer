@@ -1,0 +1,291 @@
+/**
+ * @file uart_comm.c
+ * @brief UART communication implementation
+ */
+
+#include "uart_comm.h"
+#include "../main_pins.h"
+#include "../protocol/protocol.h"
+#include "../motor/motor_control.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/uart.h"
+#include "esp_log.h"
+#include <string.h>
+
+static const char *TAG = "UART_COMM";
+
+#define UART_NUM            UART_NUM_0
+#define UART_BAUD           115200
+#define UART_BUF_SIZE       256
+
+/* Response buffer */
+static uint8_t tx_buffer[64];
+
+/* ============================================
+   INITIALIZATION
+   ============================================ */
+esp_err_t uart_comm_init(void)
+{
+    uart_config_t uart_config = {
+        .baud_rate = UART_BAUD,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM, PIN_UART_TX, PIN_UART_RX, 
+                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    
+    ESP_LOGI(TAG, "UART initialized (TX:%d, RX:%d, %d baud)", 
+             PIN_UART_TX, PIN_UART_RX, UART_BAUD);
+    
+    return ESP_OK;
+}
+
+void uart_comm_send(const uint8_t *data, uint16_t length)
+{
+    uart_write_bytes(UART_NUM, data, length);
+}
+
+/* ============================================
+   RESPONSE HELPERS
+   ============================================ */
+static void send_ack(void)
+{
+    uint8_t len = proto_build_ack(tx_buffer);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_nak(protocol_error_t error)
+{
+    uint8_t len = proto_build_nak(tx_buffer, error);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_status(void)
+{
+    motor_status_t status;
+    motor_get_status(&status);
+    uint8_t len = proto_build_status(tx_buffer, &status);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_position(void)
+{
+    int32_t steps = motor_get_position_steps();
+    float percent = motor_get_position_percent();
+    uint8_t len = proto_build_position(tx_buffer, steps, percent);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_sgt(void)
+{
+    int8_t sgt = motor_get_sgt();
+    uint8_t len = proto_build_sgt(tx_buffer, sgt);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_pong(void)
+{
+    uint8_t len = proto_build_pong(tx_buffer);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_notify(uint8_t type, uint8_t data)
+{
+    uint8_t len = proto_build_notify(tx_buffer, type, data);
+    uart_comm_send(tx_buffer, len);
+}
+
+/* ============================================
+   COMMAND HANDLER
+   ============================================ */
+static void handle_command(proto_frame_t *frame)
+{
+    esp_err_t ret;
+    
+    ESP_LOGD(TAG, "Received command: 0x%02X, data_len: %d", frame->cmd, frame->length);
+    
+    switch (frame->cmd) {
+        case CMD_PING:
+            ESP_LOGI(TAG, "PING received");
+            send_pong();
+            break;
+            
+        case CMD_GET_STATUS:
+            ESP_LOGD(TAG, "GET_STATUS");
+            send_status();
+            break;
+            
+        case CMD_CALIBRATE:
+            ESP_LOGI(TAG, "CALIBRATE command");
+            send_ack();  /* Acknowledge command received */
+            ret = motor_calibrate();
+            if (ret == ESP_OK) {
+                send_notify(NOTIFY_CALIBRATE_DONE, 0);
+            } else {
+                send_notify(NOTIFY_ERROR, PROTO_ERR_MOTOR_FAULT);
+            }
+            break;
+            
+        case CMD_HOME:
+            ESP_LOGI(TAG, "HOME command");
+            ret = motor_home();
+            if (ret == ESP_OK) {
+                send_ack();
+                send_notify(NOTIFY_HOME_COMPLETE, 0);
+            } else {
+                send_nak(PROTO_ERR_NOT_CALIBRATED);
+            }
+            break;
+            
+        case CMD_MOVE_PERCENT:
+            if (frame->length >= 2) {
+                int16_t pct_fixed;
+                memcpy(&pct_fixed, frame->data, 2);
+                float percent = (float)pct_fixed / 10.0f;
+                
+                ESP_LOGI(TAG, "MOVE_PERCENT: %.1f%%", percent);
+                
+                ret = motor_move_to_percent(percent);
+                if (ret == ESP_OK) {
+                    send_ack();
+                    /* Position update sent after move completes */
+                    send_position();
+                    send_notify(NOTIFY_MOVE_COMPLETE, 0);
+                } else if (ret == ESP_ERR_INVALID_STATE) {
+                    motor_status_t status;
+                    motor_get_status(&status);
+                    if (!status.is_homed) {
+                        send_nak(PROTO_ERR_NOT_HOMED);
+                    } else {
+                        send_nak(PROTO_ERR_NOT_CALIBRATED);
+                    }
+                } else {
+                    send_nak(PROTO_ERR_MOTOR_FAULT);
+                }
+            } else {
+                send_nak(PROTO_ERR_INVALID_PARAM);
+            }
+            break;
+            
+        case CMD_MOVE_POSITION:
+            if (frame->length >= 4) {
+                int32_t position;
+                memcpy(&position, frame->data, 4);
+                
+                ESP_LOGI(TAG, "MOVE_POSITION: %ld", (long)position);
+                
+                ret = motor_move_to_position(position);
+                if (ret == ESP_OK) {
+                    send_ack();
+                    send_position();
+                    send_notify(NOTIFY_MOVE_COMPLETE, 0);
+                } else {
+                    send_nak(PROTO_ERR_NOT_HOMED);
+                }
+            } else {
+                send_nak(PROTO_ERR_INVALID_PARAM);
+            }
+            break;
+            
+        case CMD_STOP:
+            ESP_LOGI(TAG, "STOP command");
+            motor_stop();
+            send_ack();
+            break;
+            
+        case CMD_ENABLE:
+            ESP_LOGI(TAG, "ENABLE command");
+            motor_enable();
+            send_ack();
+            break;
+            
+        case CMD_DISABLE:
+            ESP_LOGI(TAG, "DISABLE command");
+            motor_disable();
+            send_ack();
+            break;
+            
+        case CMD_SET_SGT:
+            if (frame->length >= 1) {
+                int8_t sgt = (int8_t)frame->data[0];
+                ESP_LOGI(TAG, "SET_SGT: %d", sgt);
+                motor_set_sgt(sgt);
+                send_ack();
+            } else {
+                send_nak(PROTO_ERR_INVALID_PARAM);
+            }
+            break;
+            
+        case CMD_GET_SGT:
+            ESP_LOGD(TAG, "GET_SGT");
+            send_sgt();
+            break;
+            
+        case CMD_SAVE_CALIBRATION:
+            ESP_LOGI(TAG, "SAVE_CALIBRATION command");
+            ret = motor_save_calibration();
+            if (ret == ESP_OK) {
+                send_ack();
+            } else {
+                send_nak(PROTO_ERR_MOTOR_FAULT);
+            }
+            break;
+            
+        case CMD_CLEAR_CALIBRATION:
+            ESP_LOGI(TAG, "CLEAR_CALIBRATION command");
+            motor_clear_calibration();
+            send_ack();
+            break;
+            
+        default:
+            ESP_LOGW(TAG, "Unknown command: 0x%02X", frame->cmd);
+            send_nak(PROTO_ERR_INVALID_CMD);
+            break;
+    }
+}
+
+/* ============================================
+   UART COMMUNICATION TASK
+   ============================================ */
+static void uart_comm_task(void *pvParameters)
+{
+    uint8_t rx_byte;
+    proto_frame_t frame;
+    
+    ESP_LOGI(TAG, "UART communication task started");
+    
+    /* Reset protocol parser */
+    proto_parser_reset();
+    
+    while (1) {
+        /* Read one byte at a time (non-blocking with short timeout) */
+        int len = uart_read_bytes(UART_NUM, &rx_byte, 1, pdMS_TO_TICKS(10));
+        
+        if (len > 0) {
+            /* Feed byte to protocol parser */
+            if (proto_parse_byte(rx_byte, &frame)) {
+                if (frame.valid) {
+                    ESP_LOGD(TAG, "Valid frame received, cmd=0x%02X", frame.cmd);
+                    handle_command(&frame);
+                } else {
+                    ESP_LOGW(TAG, "Invalid frame (CRC error)");
+                }
+            }
+        }
+        
+        /* Small yield to prevent watchdog issues */
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+void uart_comm_start_task(void)
+{
+    xTaskCreate(uart_comm_task, "uart_comm", 4096, NULL, 10, NULL);
+}
