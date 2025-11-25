@@ -1,4 +1,14 @@
 idf_component_register(
-    SRCS "main.c" "tmc2130.c"
-    INCLUDE_DIRS "."
+    SRCS 
+        "main.c"
+        "motor/tmc2130.c"
+        "motor/motor_control.c"
+        "console/console.c"
+        "console/uart_comm.c"
+        "protocol/protocol.c"
+    INCLUDE_DIRS 
+        "."
+        "motor"
+        "console"
+        "protocol"
 )
