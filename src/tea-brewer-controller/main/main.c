@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_console.h"
 #include "esp_vfs_dev.h"
 #include "driver/gptimer.h"
@@ -80,20 +81,14 @@ static int8_t stallguard_threshold = -6;
  */
 static void init_console(void)
 {
-    /* Disable buffering on stdin */
     setvbuf(stdin, NULL, _IONBF, 0);
-    
-    /* Disable buffering on stdout */
     setvbuf(stdout, NULL, _IONBF, 0);
     
-    /* Install USB Serial JTAG driver for interrupt-driven reads and writes */
     usb_serial_jtag_driver_config_t usb_serial_config = {
         .rx_buffer_size = 256,
         .tx_buffer_size = 256,
     };
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_serial_config));
-    
-    /* Configure VFS to use USB Serial JTAG driver */
     esp_vfs_usb_serial_jtag_use_driver();
     
     printf("\r\n");
@@ -199,7 +194,7 @@ static void start_continuous_movement(bool forward)
 }
 
 /**
- * @brief Move specific number of steps (blocking)
+ * @brief Move specific number of steps (non-blocking check with proper yields)
  */
 static void move_steps_blocking(int32_t steps)
 {
@@ -214,8 +209,17 @@ static void move_steps_blocking(int32_t steps)
     gptimer_set_raw_count(step_timer, 0);
     gptimer_start(step_timer);
     
+    // Wait for completion with proper delays to prevent watchdog timeout
+    int32_t last_reported = steps_remaining;
     while (motor_running) {
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // Use longer delay to give IDLE task time to run
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
+        // Optional: print progress for long moves
+        if (steps_remaining < last_reported - 1000) {
+            printf("  Progress: %ld steps remaining...\r\n", (long)steps_remaining);
+            last_reported = steps_remaining;
+        }
     }
 }
 
@@ -316,7 +320,7 @@ static int32_t find_endpoint(bool forward)
             printf("Stall detected at position: %ld\r\n", (long)current_position);
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(20));  // Increased delay
     }
     
     int32_t steps_moved = current_position - start_position;
@@ -416,7 +420,7 @@ static bool move_to_position(int32_t target_position)
     
     int32_t steps_to_move = target_position - current_position;
     
-    printf("Moving: %ld -> %ld (delta: %ld)\r\n", 
+    printf("Moving: %ld -> %ld (%ld steps)\r\n", 
            (long)current_position, (long)target_position, (long)steps_to_move);
     
     if (steps_to_move == 0) {
@@ -720,6 +724,29 @@ static esp_err_t init_tmc2130(void)
 }
 
 /**
+ * @brief Motor control task - handles movement without blocking serial
+ */
+typedef struct {
+    bool pending;
+    float target_percent;
+} move_command_t;
+
+static volatile move_command_t pending_move = {false, 0};
+
+static void motor_task(void *pvParameters)
+{
+    while (1) {
+        if (pending_move.pending) {
+            pending_move.pending = false;
+            move_to_percent(pending_move.target_percent);
+            printf("> ");
+            fflush(stdout);
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+/**
  * @brief Serial input task
  */
 static void serial_task(void *pvParameters)
@@ -745,7 +772,7 @@ static void serial_task(void *pvParameters)
                 cmd_index = 0;
                 printf("> ");
                 fflush(stdout);
-            } else if (c == 127 || c == 8) {  // Backspace
+            } else if (c == 127 || c == 8) {
                 if (cmd_index > 0) {
                     cmd_index--;
                     printf("\b \b");
@@ -797,10 +824,10 @@ void app_main(void)
     
     printf("Ready. Type 'c' to calibrate or 'h' for help.\r\n");
     
-    // Create serial input task
-    xTaskCreate(serial_task, "serial_task", 4096, NULL, 5, NULL);
+    // Create serial input task with higher priority
+    xTaskCreate(serial_task, "serial_task", 4096, NULL, 10, NULL);
     
-    // Main loop can do other things or just idle
+    // Main loop - just keep alive
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
