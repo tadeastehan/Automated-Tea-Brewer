@@ -56,6 +56,7 @@ void LVGL_knob_event(void *event)
 				current_tea_index--;
 				update_tea_screen_label();
 				update_tea_color();
+				update_tea_background();
 			}
 		}
 		else if (ui_screen_state.current_screen == UI_SCREEN_SETTINGS) {
@@ -80,6 +81,7 @@ void LVGL_knob_event(void *event)
 				current_tea_index++;
 				update_tea_screen_label();
 				update_tea_color();
+				update_tea_background();
 			}
 		}
 		else if (ui_screen_state.current_screen == UI_SCREEN_SETTINGS) {

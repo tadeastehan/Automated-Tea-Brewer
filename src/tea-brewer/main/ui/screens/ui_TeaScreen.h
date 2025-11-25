@@ -20,6 +20,8 @@ extern lv_obj_t * ui_Begin;
 extern lv_obj_t * ui_TeaName;
 extern void ui_event_Edit(lv_event_t * e);
 extern lv_obj_t * ui_Edit;
+extern void ui_event_Image1(lv_event_t * e);
+extern lv_obj_t * ui_Image1;
 // CUSTOM VARIABLES
 extern lv_obj_t * uic_Begin;
 extern lv_obj_t * uic_TeaName;

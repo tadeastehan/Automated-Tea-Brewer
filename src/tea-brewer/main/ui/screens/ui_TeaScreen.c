@@ -11,6 +11,7 @@ lv_obj_t * ui_TeaScreen = NULL;
 lv_obj_t * ui_Begin = NULL;
 lv_obj_t * ui_TeaName = NULL;
 lv_obj_t * ui_Edit = NULL;
+lv_obj_t * ui_Image1 = NULL;
 // event funtions
 void ui_event_TeaScreen(lv_event_t * e)
 {
@@ -42,6 +43,15 @@ void ui_event_Edit(lv_event_t * e)
     }
 }
 
+void ui_event_Image1(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_CLICKED) {
+        nextTeaScreen(e);
+    }
+}
+
 // build funtions
 
 void ui_TeaScreen_screen_init(void)
@@ -53,7 +63,6 @@ void ui_TeaScreen_screen_init(void)
                                            _ui_theme_color_background);
     ui_object_set_themeable_style_property(ui_TeaScreen, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_BG_OPA,
                                            _ui_theme_alpha_background);
-    lv_obj_set_style_bg_image_src(ui_TeaScreen, &ui_img_greenteascreen_png, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_Begin = lv_button_create(ui_TeaScreen);
     lv_obj_set_width(ui_Begin, 100);
@@ -95,8 +104,17 @@ void ui_TeaScreen_screen_init(void)
                                            _ui_theme_alpha_teacolor);
     lv_obj_set_style_bg_image_src(ui_Edit, &ui_img_2046542749, LV_PART_MAIN | LV_STATE_DEFAULT);
 
+    ui_Image1 = lv_image_create(ui_TeaScreen);
+    lv_image_set_src(ui_Image1, &ui_img_greenteascreen_png);
+    lv_obj_set_width(ui_Image1, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_Image1, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_align(ui_Image1, LV_ALIGN_TOP_MID);
+    lv_obj_add_flag(ui_Image1, LV_OBJ_FLAG_CLICKABLE);     /// Flags
+    lv_obj_remove_flag(ui_Image1, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+
     lv_obj_add_event_cb(ui_Begin, ui_event_Begin, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_Edit, ui_event_Edit, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(ui_Image1, ui_event_Image1, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_TeaScreen, ui_event_TeaScreen, LV_EVENT_ALL, NULL);
     uic_Begin = ui_Begin;
     uic_TeaName = ui_TeaName;
@@ -114,5 +132,6 @@ void ui_TeaScreen_screen_destroy(void)
     uic_TeaName = NULL;
     ui_TeaName = NULL;
     ui_Edit = NULL;
+    ui_Image1 = NULL;
 
 }

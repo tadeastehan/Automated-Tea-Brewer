@@ -59,6 +59,11 @@ extern lv_obj_t * ui____initial_actions0;
 // IMAGES AND IMAGE SETS
 LV_IMG_DECLARE(ui_img_title_png);    // assets/title.png
 LV_IMG_DECLARE(ui_img_greenteascreen_png);    // assets/greenteascreen.png
+LV_IMG_DECLARE(ui_img_blackteascreen_png);    // assets/blackteascreen.png
+LV_IMG_DECLARE(ui_img_herbalteascreen_png);    // assets/herbalteascreen.png
+LV_IMG_DECLARE(ui_img_fruitteascreen_png);    // assets/fruitteascreen.png
+LV_IMG_DECLARE(ui_img_whiteteascreen_png);    // assets/whiteteascreen.png
+LV_IMG_DECLARE(ui_img_functionalteascreen_png);    // assets/functionalteascreen.png
 LV_IMG_DECLARE(ui_img_191910993);    // assets/play-circle-outline-custom.png
 LV_IMG_DECLARE(ui_img_2046542749);    // assets/cookie-edit-outline-custom.png
 LV_IMG_DECLARE(ui_img_teapot_png);    // assets/teapot.png

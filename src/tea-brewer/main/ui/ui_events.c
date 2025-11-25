@@ -41,6 +41,16 @@ static const uint32_t tea_colors[MAX_TEA_TYPES] = {
     0xE9D257   // Functional Tea
 };
 
+// Tea background images
+static const lv_image_dsc_t* tea_background_images[MAX_TEA_TYPES] = {
+    &ui_img_greenteascreen_png,      // Green Tea
+    &ui_img_blackteascreen_png,      // Black Tea
+    &ui_img_herbalteascreen_png,     // Herbal Tea
+    &ui_img_fruitteascreen_png,      // Fruit Tea
+    &ui_img_whiteteascreen_png,      // White Tea
+    &ui_img_functionalteascreen_png  // Functional Tea
+};
+
 // Timer callback to save drying position to NVS
 static void drying_position_save_timer_callback(TimerHandle_t xTimer)
 {
@@ -89,6 +99,15 @@ void update_tea_color(void)
 	}
 }
 
+// Helper function to update tea screen background image
+void update_tea_background(void)
+{
+	extern lv_obj_t * ui_Image1;
+	if (ui_Image1 && current_tea_index < MAX_TEA_TYPES) {
+		lv_image_set_src(ui_Image1, tea_background_images[current_tea_index]);
+	}
+}
+
 void checkPot(lv_event_t * e)
 {
 	// Your code here
@@ -116,6 +135,7 @@ void nextTeaScreen(lv_event_t * e)
 		current_tea_index++;
 		update_tea_screen_label();
 		update_tea_color();
+		update_tea_background();
 	} else {
 		// If at last tea, go to settings screen
 		extern lv_obj_t * ui_SettingsScreen;
@@ -333,6 +353,7 @@ void onTeaScreen(lv_event_t * e)
 	check_and_save_pending_nvs();
 	update_tea_screen_label();
 	update_tea_color();
+	update_tea_background();
 }
 
 void onTeapotScreen(lv_event_t * e)
@@ -397,6 +418,11 @@ void onSettingsScreen(lv_event_t * e)
 {
 	ui_screen_state.current_screen = UI_SCREEN_SETTINGS;
 	check_and_save_pending_nvs();
+	
+	// Set color to Green Tea (index 0) for settings screen
+	ui_theme_variable_t *color_ptr = (ui_theme_variable_t *)_ui_theme_color_teacolor;
+	color_ptr[0] = tea_colors[0];  // Use Green Tea color (0x92A202)
+	_ui_theme_set_variable_styles(UI_VARIABLE_STYLES_MODE_FOLLOW);
 	
 	// Load drying time from NVS and update roller
 	extern lv_obj_t * ui_Roller5;

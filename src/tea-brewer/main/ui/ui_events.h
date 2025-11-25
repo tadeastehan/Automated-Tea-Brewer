@@ -17,6 +17,8 @@ extern uint8_t current_tea_index;
 void update_tea_screen_label(void);
 // Helper function for updating tea color theme
 void update_tea_color(void);
+// Helper function for updating tea screen background image
+void update_tea_background(void);
 
 void onMainScreen(lv_event_t * e);
 void nextTeaScreen(lv_event_t * e);
