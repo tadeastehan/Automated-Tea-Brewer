@@ -127,27 +127,84 @@ void stopBrewing(lv_event_t * e)
 
 void nextTeaScreen(lv_event_t * e)
 {
-    // If on main screen, go to tea 0
+    // Get the touch position from the event
+    lv_point_t point;
+    lv_indev_t * indev = lv_event_get_indev(e);
+    if (indev) {
+        lv_indev_get_point(indev, &point);
+    } else {
+        indev = lv_indev_active();
+        if (indev) {
+            lv_indev_get_point(indev, &point);
+        } else {
+            ESP_LOGW(TAG, "No input device found, defaulting to right side behavior");
+            point.x = 320;  // Default to right side
+        }
+    }
+    
+    // Determine if touch is on left side (x <= 240) or right side (x > 240)
+    bool is_left_side = (point.x <= 240);
+    
+    // Handle Main Screen
     if (ui_screen_state.current_screen == UI_SCREEN_MAIN) {
-        current_tea_index = 0;
-        extern lv_obj_t * ui_TeaScreen;
-        if (ui_TeaScreen) {
-            _ui_screen_change(&ui_TeaScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeaScreen_screen_init);
+        if (is_left_side) {
+            // Left side on main screen -> go to settings
+            extern lv_obj_t * ui_SettingsScreen;
+            if (ui_SettingsScreen) {
+                _ui_screen_change(&ui_SettingsScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_SettingsScreen_screen_init);
+            }
+        } else {
+            // Right side on main screen -> go to tea 0
+            current_tea_index = 0;
+            extern lv_obj_t * ui_TeaScreen;
+            if (ui_TeaScreen) {
+                _ui_screen_change(&ui_TeaScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeaScreen_screen_init);
+            }
         }
         return;
     }
     
-    // Increase tea index
-    if (current_tea_index < MAX_TEA_TYPES - 1) {
-        current_tea_index++;
-        update_tea_screen_label();
-        update_tea_color();
-        update_tea_background();
+    // Handle Settings Screen
+    if (ui_screen_state.current_screen == UI_SCREEN_SETTINGS) {
+        if (is_left_side) {
+            // Left side on settings screen -> go to last tea
+            current_tea_index = MAX_TEA_TYPES - 1;
+            extern lv_obj_t * ui_TeaScreen;
+            if (ui_TeaScreen) {
+                _ui_screen_change(&ui_TeaScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeaScreen_screen_init);
+            }
+        }
+        return;
+    }
+    
+    // Handle Tea Screen navigation
+    if (is_left_side) {
+        // Left side - go to previous tea
+        if (current_tea_index > 0) {
+            current_tea_index--;
+            update_tea_screen_label();
+            update_tea_color();
+            update_tea_background();
+        } else {
+            // If at first tea (index 0), go back to main screen
+            extern lv_obj_t * ui_MainScreen;
+            if (ui_MainScreen) {
+                _ui_screen_change(&ui_MainScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_MainScreen_screen_init);
+            }
+        }
     } else {
-        // If at last tea, go to settings screen
-        extern lv_obj_t * ui_SettingsScreen;
-        if (ui_SettingsScreen) {
-            _ui_screen_change(&ui_SettingsScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_SettingsScreen_screen_init);
+        // Right side - go to next tea
+        if (current_tea_index < MAX_TEA_TYPES - 1) {
+            current_tea_index++;
+            update_tea_screen_label();
+            update_tea_color();
+            update_tea_background();
+        } else {
+            // If at last tea, go to settings screen
+            extern lv_obj_t * ui_SettingsScreen;
+            if (ui_SettingsScreen) {
+                _ui_screen_change(&ui_SettingsScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_SettingsScreen_screen_init);
+            }
         }
     }
 }
