@@ -7,6 +7,7 @@
 #include "../main_pins.h"
 #include "../protocol/protocol.h"
 #include "../motor/motor_control.h"
+#include "../temperature_sensor/thermometer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
@@ -99,6 +100,20 @@ static void send_pong(void)
 static void send_notify(uint8_t type, uint8_t data)
 {
     uint8_t len = proto_build_notify(tx_buffer, type, data);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_temperature(void)
+{
+    float object_temp = 0.0f;
+    float ambient_temp = 0.0f;
+    
+    if (thermometer_is_initialized()) {
+        thermometer_get_object_temp(&object_temp);
+        thermometer_get_ambient_temp(&ambient_temp);
+    }
+    
+    uint8_t len = proto_build_temperature(tx_buffer, object_temp, ambient_temp);
     uart_comm_send(tx_buffer, len);
 }
 
@@ -242,6 +257,11 @@ static void handle_command(proto_frame_t *frame)
             ESP_LOGI(TAG, "CLEAR_CALIBRATION command");
             motor_clear_calibration();
             send_ack();
+            break;
+            
+        case CMD_GET_TEMPERATURE:
+            ESP_LOGD(TAG, "GET_TEMPERATURE");
+            send_temperature();
             break;
             
         default:

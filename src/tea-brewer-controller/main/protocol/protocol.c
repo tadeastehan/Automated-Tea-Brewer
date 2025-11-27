@@ -108,6 +108,16 @@ uint8_t proto_build_notify(uint8_t *buffer, uint8_t notify_type, uint8_t data)
     return proto_build_frame(buffer, notify_type, &data, 1);
 }
 
+uint8_t proto_build_temperature(uint8_t *buffer, float object_temp, float ambient_temp)
+{
+    uint8_t data[8];
+    /* Pack temperatures as 32-bit floats */
+    memcpy(&data[0], &object_temp, 4);
+    memcpy(&data[4], &ambient_temp, 4);
+    
+    return proto_build_frame(buffer, RSP_TEMPERATURE, data, 8);
+}
+
 /* ============================================
    FRAME PARSING
    ============================================ */

@@ -6,9 +6,11 @@ idf_component_register(
         "console/console.c"
         "console/uart_comm.c"
         "protocol/protocol.c"
+        "temperature_sensor/thermometer.c"
     INCLUDE_DIRS 
         "."
         "motor"
         "console"
         "protocol"
+        "temperature_sensor"
 )

@@ -27,6 +27,7 @@
 #include "motor/motor_control.h"
 #include "console/console.h"
 #include "console/uart_comm.h"
+#include "temperature_sensor/thermometer.h"
 
 static const char *TAG = "MAIN";
 
@@ -139,7 +140,19 @@ void app_main(void)
     }
     
     /* ========================================
-       STEP 5: Initialize UART Communication
+       STEP 5: Initialize Temperature Sensor
+       ======================================== */
+    console_printf("Initializing temperature sensor...\r\n");
+    ret = thermometer_init();
+    if (ret == ESP_OK) {
+        console_printf("Temperature sensor: OK\r\n");
+    } else {
+        console_printf("Temperature sensor: FAILED\r\n");
+        ESP_LOGW(TAG, "Temperature sensor init failed: %s", esp_err_to_name(ret));
+    }
+    
+    /* ========================================
+       STEP 6: Initialize UART Communication
        ======================================== */
     console_printf("Initializing UART...\r\n");
     ret = uart_comm_init();
@@ -153,12 +166,12 @@ void app_main(void)
     console_printf("\r\n");
     
     /* ========================================
-       STEP 6: Print Status
+       STEP 7: Print Status
        ======================================== */
     print_startup_status();
     
     /* ========================================
-       STEP 7: Start Communication Tasks
+       STEP 8: Start Communication Tasks
        ======================================== */
     ESP_LOGI(TAG, "Starting tasks...");
     
@@ -171,17 +184,9 @@ void app_main(void)
     ESP_LOGI(TAG, "System ready!");
     
     /* ========================================
-       MAIN LOOP - Idle / Watchdog Feed
+       MAIN LOOP - Idle
        ======================================== */
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        
-        /* Optional: Periodic status check */
-        #if 0
-        motor_status_t status;
-        motor_get_status(&status);
-        ESP_LOGD(TAG, "Pos: %.1f%%, State: %d", 
-                 status.position_percent, status.state);
-        #endif
     }
 }

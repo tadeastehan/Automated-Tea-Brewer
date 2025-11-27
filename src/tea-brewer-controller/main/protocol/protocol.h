@@ -44,6 +44,7 @@ typedef enum
     CMD_GET_SGT = 0x31,
     CMD_SAVE_CALIBRATION = 0x40,
     CMD_CLEAR_CALIBRATION = 0x41,
+    CMD_GET_TEMPERATURE = 0x50,
 
     /* Responses (Motor Controller -> Display) */
     RSP_ACK = 0x80,
@@ -52,6 +53,7 @@ typedef enum
     RSP_POSITION = 0x83,
     RSP_SGT = 0x84,
     RSP_PONG = 0x85,
+    RSP_TEMPERATURE = 0x86,
 
     /* Async notifications (Motor Controller -> Display) */
     NOTIFY_MOVE_COMPLETE = 0xA0,
@@ -180,5 +182,14 @@ uint8_t proto_build_pong(uint8_t *buffer);
  * @brief Build notification
  */
 uint8_t proto_build_notify(uint8_t *buffer, uint8_t notify_type, uint8_t data);
+
+/**
+ * @brief Build temperature response
+ * @param buffer Output buffer
+ * @param object_temp Object temperature in °C
+ * @param ambient_temp Ambient temperature in °C
+ * @return Frame length
+ */
+uint8_t proto_build_temperature(uint8_t *buffer, float object_temp, float ambient_temp);
 
 #endif // PROTOCOL_H

@@ -86,6 +86,13 @@ typedef void (*uart_comm_calibrate_complete_cb_t)(bool success);
  */
 typedef void (*uart_comm_error_cb_t)(uint8_t error_code);
 
+/**
+ * @brief Callback for temperature updates
+ * @param object_temp Object temperature in °C
+ * @param ambient_temp Ambient temperature in °C
+ */
+typedef void (*uart_comm_temperature_cb_t)(float object_temp, float ambient_temp);
+
 /* ============================================
    INITIALIZATION
    ============================================ */
@@ -134,6 +141,11 @@ void uart_comm_set_calibrate_complete_callback(uart_comm_calibrate_complete_cb_t
  * @brief Register callback for errors
  */
 void uart_comm_set_error_callback(uart_comm_error_cb_t callback);
+
+/**
+ * @brief Register callback for temperature updates
+ */
+void uart_comm_set_temperature_callback(uart_comm_temperature_cb_t callback);
 
 /* ============================================
    MOTOR COMMANDS (Non-blocking)
@@ -220,6 +232,12 @@ bool uart_comm_save_calibration(void);
  */
 bool uart_comm_clear_calibration(void);
 
+/**
+ * @brief Request temperature reading
+ * @return true if command sent
+ */
+bool uart_comm_get_temperature(void);
+
 /* ============================================
    STATUS ACCESS
    ============================================ */
@@ -229,6 +247,13 @@ bool uart_comm_clear_calibration(void);
  * @param status Pointer to status structure to fill
  */
 void uart_comm_get_cached_status(motor_status_t *status);
+
+/**
+ * @brief Get cached temperature readings
+ * @param object_temp Pointer to store object temperature (can be NULL)
+ * @param ambient_temp Pointer to store ambient temperature (can be NULL)
+ */
+void uart_comm_get_cached_temperature(float *object_temp, float *ambient_temp);
 
 /**
  * @brief Check if motor controller is connected

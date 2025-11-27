@@ -27,4 +27,10 @@
 #define PIN_UART_TX         16
 #define PIN_UART_RX         17
 
+/* ============================================
+   I2C PINS (for MLX90614 Temperature Sensor)
+   ============================================ */
+#define PIN_I2C_SDA         22
+#define PIN_I2C_SCL         23
+
 #endif // PINS_H

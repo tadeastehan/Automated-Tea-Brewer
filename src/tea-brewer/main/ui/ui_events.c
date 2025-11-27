@@ -11,8 +11,12 @@
 #include "freertos/timers.h"
 #include "../uart_comm.h"
 #include "esp_log.h"
+#include "esp_lvgl_port.h"
 
 static const char *TAG = "UI_EVENTS";
+
+/* Set to 1 to show both object and ambient temperature, 0 for object only */
+#define TEMPERATURE_DEBUG 0
 
 // Define the screen state variable
 ui_screen_state_t ui_screen_state = {0};
@@ -24,11 +28,16 @@ static volatile bool tea_params_save_pending = false;
 // Timer handles
 static TimerHandle_t drying_position_save_timer = NULL;
 static TimerHandle_t tea_params_save_timer = NULL;
+static TimerHandle_t temperature_request_timer = NULL;
 
 // NVS save task handle
 static TaskHandle_t nvs_save_task_handle = NULL;
 
 uint8_t current_tea_index = 0;  // Currently selected tea (0 = first tea)
+
+/* Forward declarations */
+static void temperature_request_timer_callback(TimerHandle_t xTimer);
+static void on_temperature_update(float object_temp, float ambient_temp);
 
 /* ============================================
    NVS SAVE TASK
@@ -78,6 +87,27 @@ void ui_events_init(void)
             ESP_LOGE(TAG, "Failed to create NVS save task");
         }
     }
+    
+    /* Register temperature callback */
+    uart_comm_set_temperature_callback(on_temperature_update);
+    
+    /* Create temperature request timer (5 second interval) */
+    if (temperature_request_timer == NULL) {
+        temperature_request_timer = xTimerCreate(
+            "temp_timer",
+            pdMS_TO_TICKS(5000),  // 5 seconds
+            pdTRUE,               // Auto-reload
+            NULL,
+            temperature_request_timer_callback
+        );
+        
+        if (temperature_request_timer != NULL) {
+            xTimerStart(temperature_request_timer, 0);
+            ESP_LOGI(TAG, "Temperature request timer started (5s interval)");
+        } else {
+            ESP_LOGE(TAG, "Failed to create temperature request timer");
+        }
+    }
 }
 
 /* ============================================
@@ -99,6 +129,32 @@ static void tea_params_save_timer_callback(TimerHandle_t xTimer)
     tea_params_save_pending = true;
     if (nvs_save_task_handle != NULL) {
         xTaskNotifyGive(nvs_save_task_handle);
+    }
+}
+
+// Timer callback for temperature requests (every 5 seconds)
+static void temperature_request_timer_callback(TimerHandle_t xTimer)
+{
+    uart_comm_get_temperature();
+}
+
+// Temperature callback - update UI when temperature received
+static void on_temperature_update(float object_temp, float ambient_temp)
+{
+    /* Update the temperature label on MainScreen */
+    /* Must use LVGL port lock since this is called from UART task */
+    extern lv_obj_t * ui_Temperature;
+    if (ui_Temperature != NULL) {
+        if (lvgl_port_lock(100)) {  /* 100ms timeout */
+            char temp_str[32];
+#if TEMPERATURE_DEBUG
+            snprintf(temp_str, sizeof(temp_str), "%.1f °C\n%.1f °C", object_temp, ambient_temp);
+#else
+            snprintf(temp_str, sizeof(temp_str), "%.1f °C", object_temp);
+#endif
+            lv_label_set_text(ui_Temperature, temp_str);
+            lvgl_port_unlock();
+        }
     }
 }
 
@@ -172,6 +228,12 @@ void nextTeaScreen(lv_event_t * e)
             extern lv_obj_t * ui_TeaScreen;
             if (ui_TeaScreen) {
                 _ui_screen_change(&ui_TeaScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeaScreen_screen_init);
+            }
+        } else {
+            // Right side on settings screen -> go to main screen
+            extern lv_obj_t * ui_MainScreen;
+            if (ui_MainScreen) {
+                _ui_screen_change(&ui_MainScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_MainScreen_screen_init);
             }
         }
         return;

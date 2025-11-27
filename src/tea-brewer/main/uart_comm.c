@@ -34,6 +34,7 @@ static const char *TAG = "UART_COMM";
 #define CMD_GET_SGT             0x31
 #define CMD_SAVE_CALIBRATION    0x40
 #define CMD_CLEAR_CALIBRATION   0x41
+#define CMD_GET_TEMPERATURE     0x50
 
 /* Response IDs */
 #define RSP_ACK                 0x80
@@ -42,6 +43,7 @@ static const char *TAG = "UART_COMM";
 #define RSP_POSITION            0x83
 #define RSP_SGT                 0x84
 #define RSP_PONG                0x85
+#define RSP_TEMPERATURE         0x86
 
 /* Notification IDs */
 #define NOTIFY_MOVE_COMPLETE    0xA0
@@ -75,6 +77,11 @@ static uart_comm_move_complete_cb_t move_complete_callback = NULL;
 static uart_comm_home_complete_cb_t home_complete_callback = NULL;
 static uart_comm_calibrate_complete_cb_t calibrate_complete_callback = NULL;
 static uart_comm_error_cb_t error_callback = NULL;
+static uart_comm_temperature_cb_t temperature_callback = NULL;
+
+/* Cached temperature */
+static float cached_object_temp = 0.0f;
+static float cached_ambient_temp = 0.0f;
 
 /* TX buffer */
 static uint8_t tx_buffer[64];
@@ -276,6 +283,28 @@ static void handle_sgt_response(const uint8_t *data, uint8_t len)
     last_response_time = esp_timer_get_time();
 }
 
+static void handle_temperature_response(const uint8_t *data, uint8_t len)
+{
+    if (len < 8) {
+        ESP_LOGW(TAG, "Temperature response too short: %d", len);
+        return;
+    }
+    
+    xSemaphoreTake(status_mutex, portMAX_DELAY);
+    memcpy(&cached_object_temp, &data[0], 4);
+    memcpy(&cached_ambient_temp, &data[4], 4);
+    xSemaphoreGive(status_mutex);
+    
+    last_response_time = esp_timer_get_time();
+    
+    ESP_LOGD(TAG, "Temperature: object=%.1f°C, ambient=%.1f°C", 
+             cached_object_temp, cached_ambient_temp);
+    
+    if (temperature_callback) {
+        temperature_callback(cached_object_temp, cached_ambient_temp);
+    }
+}
+
 static void handle_response(proto_frame_t *frame)
 {
     last_response_time = esp_timer_get_time();
@@ -310,6 +339,10 @@ static void handle_response(proto_frame_t *frame)
             
         case RSP_SGT:
             handle_sgt_response(frame->data, frame->length);
+            break;
+            
+        case RSP_TEMPERATURE:
+            handle_temperature_response(frame->data, frame->length);
             break;
             
         case RSP_PONG:
@@ -519,6 +552,11 @@ void uart_comm_set_error_callback(uart_comm_error_cb_t callback)
     error_callback = callback;
 }
 
+void uart_comm_set_temperature_callback(uart_comm_temperature_cb_t callback)
+{
+    temperature_callback = callback;
+}
+
 /* ============================================
    PUBLIC FUNCTIONS - COMMANDS
    ============================================ */
@@ -617,6 +655,12 @@ bool uart_comm_clear_calibration(void)
     return true;
 }
 
+bool uart_comm_get_temperature(void)
+{
+    send_command(CMD_GET_TEMPERATURE, NULL, 0);
+    return true;
+}
+
 /* ============================================
    PUBLIC FUNCTIONS - STATUS
    ============================================ */
@@ -626,6 +670,14 @@ void uart_comm_get_cached_status(motor_status_t *status)
     
     xSemaphoreTake(status_mutex, portMAX_DELAY);
     memcpy(status, &cached_status, sizeof(motor_status_t));
+    xSemaphoreGive(status_mutex);
+}
+
+void uart_comm_get_cached_temperature(float *object_temp, float *ambient_temp)
+{
+    xSemaphoreTake(status_mutex, portMAX_DELAY);
+    if (object_temp) *object_temp = cached_object_temp;
+    if (ambient_temp) *ambient_temp = cached_ambient_temp;
     xSemaphoreGive(status_mutex);
 }
 

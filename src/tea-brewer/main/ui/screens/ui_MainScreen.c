@@ -67,7 +67,7 @@ void ui_MainScreen_screen_init(void)
     lv_obj_set_x(ui_Temperature, 0);
     lv_obj_set_y(ui_Temperature, 70);
     lv_obj_set_align(ui_Temperature, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_Temperature, "20.5 °C");
+    lv_label_set_text(ui_Temperature, "0.0 °C");
     lv_obj_remove_flag(ui_Temperature, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM |
                        LV_OBJ_FLAG_SCROLL_CHAIN);     /// Flags
     lv_obj_set_style_text_font(ui_Temperature, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
