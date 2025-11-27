@@ -169,3 +169,8 @@ bool thermometer_is_initialized(void)
 {
     return s_initialized;
 }
+
+i2c_master_bus_handle_t thermometer_get_bus_handle(void)
+{
+    return s_i2c_bus_handle;
+}

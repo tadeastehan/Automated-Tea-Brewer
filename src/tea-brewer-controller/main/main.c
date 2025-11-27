@@ -28,6 +28,7 @@
 #include "console/console.h"
 #include "console/uart_comm.h"
 #include "temperature_sensor/thermometer.h"
+#include "distance_sensor/distance_sensor.h"
 
 static const char *TAG = "MAIN";
 
@@ -95,6 +96,28 @@ static void print_startup_status(void)
 }
 
 /**
+ * @brief Distance sensor reading task
+ * 
+ * Reads and prints distance every 250ms
+ */
+static void distance_task(void *arg)
+{
+    uint16_t distance_mm;
+    
+    while (1) {
+        if (distance_sensor_is_initialized()) {
+            esp_err_t ret = distance_sensor_get_distance(&distance_mm);
+            if (ret == ESP_OK) {
+                console_printf("Distance: %u mm\r\n", distance_mm);
+            } else {
+                console_printf("Distance: ERROR\r\n");
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+}
+
+/**
  * @brief Application entry point
  */
 void app_main(void)
@@ -152,6 +175,20 @@ void app_main(void)
     }
     
     /* ========================================
+       STEP 5.5: Initialize Distance Sensor (VL53L0X)
+       ======================================== */
+    console_printf("Initializing distance sensor...\r\n");
+    /* Share I2C bus with temperature sensor if available */
+    i2c_master_bus_handle_t i2c_bus = thermometer_get_bus_handle();
+    ret = distance_sensor_init(i2c_bus);
+    if (ret == ESP_OK) {
+        console_printf("Distance sensor: OK\r\n");
+    } else {
+        console_printf("Distance sensor: FAILED\r\n");
+        ESP_LOGW(TAG, "Distance sensor init failed: %s", esp_err_to_name(ret));
+    }
+    
+    /* ========================================
        STEP 6: Initialize UART Communication
        ======================================== */
     console_printf("Initializing UART...\r\n");
@@ -180,6 +217,12 @@ void app_main(void)
     
     /* Start UART task (ESP-to-ESP binary protocol) */
     uart_comm_start_task();
+    
+    /* Start distance sensor reading task */
+    if (distance_sensor_is_initialized()) {
+        xTaskCreate(distance_task, "distance_task", 2048, NULL, 5, NULL);
+        ESP_LOGI(TAG, "Distance sensor task started (250ms interval)");
+    }
     
     ESP_LOGI(TAG, "System ready!");
     

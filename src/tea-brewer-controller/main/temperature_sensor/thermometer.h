@@ -18,6 +18,7 @@
 
 #include <stdbool.h>
 #include "esp_err.h"
+#include "driver/i2c_master.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -103,6 +104,15 @@ esp_err_t thermometer_get_temperatures(thermometer_readings_t *readings);
  * @return true if initialized, false otherwise
  */
 bool thermometer_is_initialized(void);
+
+/**
+ * @brief Get the I2C bus handle used by the thermometer
+ * 
+ * This allows other sensors to share the same I2C bus.
+ * 
+ * @return I2C bus handle, or NULL if not initialized
+ */
+i2c_master_bus_handle_t thermometer_get_bus_handle(void);
 
 #ifdef __cplusplus
 }
