@@ -256,6 +256,18 @@ bool uart_comm_get_temperature(void);
  */
 bool uart_comm_get_pot_presence(void);
 
+/**
+ * @brief Turn on induction cooker
+ * @return true if command sent
+ */
+bool uart_comm_induction_on(void);
+
+/**
+ * @brief Turn off induction cooker
+ * @return true if command sent
+ */
+bool uart_comm_induction_off(void);
+
 /* ============================================
    STATUS ACCESS
    ============================================ */

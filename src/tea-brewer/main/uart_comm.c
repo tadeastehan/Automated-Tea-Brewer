@@ -36,6 +36,8 @@ static const char *TAG = "UART_COMM";
 #define CMD_CLEAR_CALIBRATION   0x41
 #define CMD_GET_TEMPERATURE     0x50
 #define CMD_GET_POT_PRESENCE    0x51
+#define CMD_INDUCTION_ON        0x52
+#define CMD_INDUCTION_OFF       0x53
 
 /* Response IDs */
 #define RSP_ACK                 0x80
@@ -702,6 +704,20 @@ bool uart_comm_get_temperature(void)
 bool uart_comm_get_pot_presence(void)
 {
     send_command(CMD_GET_POT_PRESENCE, NULL, 0);
+    return true;
+}
+
+bool uart_comm_induction_on(void)
+{
+    ESP_LOGI(TAG, "Sending INDUCTION_ON command");
+    send_command(CMD_INDUCTION_ON, NULL, 0);
+    return true;
+}
+
+bool uart_comm_induction_off(void)
+{
+    ESP_LOGI(TAG, "Sending INDUCTION_OFF command");
+    send_command(CMD_INDUCTION_OFF, NULL, 0);
     return true;
 }
 

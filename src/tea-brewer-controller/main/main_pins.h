@@ -33,4 +33,9 @@
 #define PIN_I2C_SDA         22
 #define PIN_I2C_SCL         23
 
+/* ============================================
+   INDUCTION COOKER CONTROL PIN
+   ============================================ */
+#define PIN_INDUCTION       15  // HIGH = ON, LOW = OFF
+
 #endif // PINS_H

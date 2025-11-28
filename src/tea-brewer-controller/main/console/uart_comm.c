@@ -9,10 +9,12 @@
 #include "../motor/motor_control.h"
 #include "../temperature_sensor/thermometer.h"
 #include "../pot_sensor/pot_sensor.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <string.h>
 
 static const char *TAG = "UART_COMM";
@@ -21,8 +23,17 @@ static const char *TAG = "UART_COMM";
 #define UART_BAUD           115200
 #define UART_BUF_SIZE       256
 
+/* Communication watchdog constants */
+#define COMM_WATCHDOG_TIMEOUT_MS    30000   // 30 seconds without communication = disconnected
+#define COMM_CONNECTION_TIMEOUT_MS  10000   // 10 seconds to establish connection
+
 /* Response buffer */
 static uint8_t tx_buffer[64];
+
+/* Communication watchdog state */
+static int64_t last_command_time = 0;
+static bool induction_is_on = false;
+static bool esp1_connected = false;     // Track if ESP #1 is connected
 
 /* ============================================
    INITIALIZATION
@@ -133,11 +144,56 @@ static void send_pot_presence(void)
 }
 
 /* ============================================
+   INDUCTION COOKER CONTROL
+   ============================================ */
+static bool induction_initialized = false;
+
+static void induction_init(void)
+{
+    if (!induction_initialized) {
+        gpio_config_t io_conf = {
+            .pin_bit_mask = (1ULL << PIN_INDUCTION),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io_conf);
+        gpio_set_level(PIN_INDUCTION, 0);  // Start with induction OFF
+        induction_initialized = true;
+        ESP_LOGI(TAG, "Induction cooker GPIO initialized (pin %d)", PIN_INDUCTION);
+    }
+}
+
+static void induction_on(void)
+{
+    induction_init();
+    gpio_set_level(PIN_INDUCTION, 1);
+    induction_is_on = true;
+    ESP_LOGI(TAG, "Induction cooker ON");
+}
+
+static void induction_off(void)
+{
+    induction_init();
+    gpio_set_level(PIN_INDUCTION, 0);
+    induction_is_on = false;
+    ESP_LOGI(TAG, "Induction cooker OFF");
+}
+
+/* ============================================
    COMMAND HANDLER
    ============================================ */
 static void handle_command(proto_frame_t *frame)
 {
     esp_err_t ret;
+    
+    /* Update last command time and connection status for watchdog */
+    last_command_time = esp_timer_get_time();
+    if (!esp1_connected) {
+        esp1_connected = true;
+        ESP_LOGI(TAG, "ESP #1 connected");
+    }
     
     ESP_LOGD(TAG, "Received command: 0x%02X, data_len: %d", frame->cmd, frame->length);
     
@@ -284,6 +340,34 @@ static void handle_command(proto_frame_t *frame)
             send_pot_presence();
             break;
             
+        case CMD_INDUCTION_ON:
+            ESP_LOGI(TAG, "INDUCTION_ON command");
+            // Safety check: only allow induction ON if ESP #1 is connected
+            if (!esp1_connected) {
+                ESP_LOGW(TAG, "Rejecting INDUCTION_ON - ESP #1 not connected");
+                send_nak(PROTO_ERR_INVALID_CMD);
+            } else {
+                // Check if motor is moving (safety interlock)
+                motor_status_t motor_status;
+                motor_get_status(&motor_status);
+                if (motor_status.state == MOTOR_STATE_MOVING || 
+                    motor_status.state == MOTOR_STATE_HOMING || 
+                    motor_status.state == MOTOR_STATE_CALIBRATING) {
+                    ESP_LOGW(TAG, "Rejecting INDUCTION_ON - motor is busy");
+                    send_nak(PROTO_ERR_MOTOR_FAULT);
+                } else {
+                    induction_on();
+                    send_ack();
+                }
+            }
+            break;
+            
+        case CMD_INDUCTION_OFF:
+            ESP_LOGI(TAG, "INDUCTION_OFF command");
+            induction_off();
+            send_ack();
+            break;
+            
         default:
             ESP_LOGW(TAG, "Unknown command: 0x%02X", frame->cmd);
             send_nak(PROTO_ERR_INVALID_CMD);
@@ -304,6 +388,9 @@ static void uart_comm_task(void *pvParameters)
     /* Reset protocol parser */
     proto_parser_reset();
     
+    /* Initialize last command time */
+    last_command_time = esp_timer_get_time();
+    
     while (1) {
         /* Read one byte at a time (non-blocking with short timeout) */
         int len = uart_read_bytes(UART_NUM, &rx_byte, 1, pdMS_TO_TICKS(10));
@@ -317,6 +404,31 @@ static void uart_comm_task(void *pvParameters)
                 } else {
                     ESP_LOGW(TAG, "Invalid frame (CRC error)");
                 }
+            }
+        }
+        
+        /* Communication watchdog - monitor ESP #1 connection */
+        int64_t now = esp_timer_get_time();
+        int64_t elapsed_ms = (now - last_command_time) / 1000;
+        
+        /* Periodic debug logging every 5 seconds */
+        static int64_t last_debug_log = 0;
+        if ((now - last_debug_log) / 1000 > 5000) {
+            last_debug_log = now;
+            ESP_LOGI(TAG, "Watchdog: connected=%d, induction=%d, elapsed=%lld ms, timeout=%d ms",
+                     esp1_connected, induction_is_on, (long long)elapsed_ms, COMM_WATCHDOG_TIMEOUT_MS);
+        }
+        
+        /* Check for connection timeout */
+        if (esp1_connected && elapsed_ms > COMM_WATCHDOG_TIMEOUT_MS) {
+            ESP_LOGW(TAG, "Communication watchdog triggered - ESP #1 disconnected!");
+            ESP_LOGW(TAG, "Elapsed time: %lld ms (timeout: %d ms)", (long long)elapsed_ms, COMM_WATCHDOG_TIMEOUT_MS);
+            esp1_connected = false;
+            
+            /* Turn off induction cooker for safety */
+            if (induction_is_on) {
+                ESP_LOGW(TAG, "Turning off induction cooker for safety");
+                induction_off();
             }
         }
         

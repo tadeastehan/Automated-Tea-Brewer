@@ -18,6 +18,19 @@ static const char *TAG = "UI_EVENTS";
 /* Set to 1 to show both object and ambient temperature, 0 for object only */
 #define TEMPERATURE_DEBUG 0
 
+/* ============================================
+   TIMING CONSTANTS
+   ============================================ */
+#define TEMP_UPDATE_INTERVAL_IDLE_MS      10000   // Temperature update interval when not brewing (10 seconds)
+#define TEMP_UPDATE_INTERVAL_BREWING_MS   1000    // Temperature update interval during brewing (1 second)
+#define MIN_TEMP_INCREASE_THRESHOLD       10.0f   // Minimum temperature increase expected in warmup period
+#define BREWING_WARMUP_TIMEOUT_MS         120000  // 2 minutes - time to check for temperature increase
+#define BREWING_MAX_TIMEOUT_MS            (20 * 60 * 1000)  // 20 minutes max brewing time
+#define POT_CONFIRMATION_TIME_MS          3000    // 3 seconds - pot must be present this long
+#define POT_DETECTION_TIMEOUT_MS          60000   // 60 seconds - max time to wait for pot
+#define POT_CHECK_INTERVAL_MS             250     // Check pot presence every 250ms
+#define BREWING_POT_CHECK_INTERVAL_MS     5000    // Check pot every 5 seconds during brewing
+
 // Define the screen state variable
 ui_screen_state_t ui_screen_state = {0};
 
@@ -31,12 +44,38 @@ static TimerHandle_t tea_params_save_timer = NULL;
 static TimerHandle_t temperature_request_timer = NULL;
 static TimerHandle_t pot_check_timer = NULL;
 static TimerHandle_t pot_timeout_timer = NULL;
+static TimerHandle_t brewing_pot_check_timer = NULL;    // Check pot every 5s during brewing/infusing
+static TimerHandle_t brewing_timeout_timer = NULL;      // 20 minute max brewing time
+static TimerHandle_t infusion_timer = NULL;             // 1 second timer for infusion countdown
+
+/* ============================================
+   BREWING STATE MACHINE
+   ============================================ */
+typedef enum {
+    BREW_STATE_IDLE = 0,
+    BREW_STATE_BREWING,
+    BREW_STATE_INFUSING,
+    BREW_STATE_SCHEDULED
+} brew_state_t;
+
+static brew_state_t current_brew_state = BREW_STATE_IDLE;
 
 // Pot detection state
 static uint32_t pot_present_start_time = 0;
 static bool pot_waiting_for_presence = false;
 static bool pot_detection_for_scheduler = false;  // true = scheduler, false = brew now
 static volatile bool pot_timeout_triggered = false;  // Flag for timeout handling
+
+// Brewing state
+static float brewing_start_temp = 0.0f;  // Room temperature when brewing started
+static uint8_t brewing_target_temp = 100;  // Target temperature for brewing
+static bool brewing_start_temp_captured = false;  // Flag to capture first temp reading
+static uint32_t brewing_start_time = 0;  // Tick count when brewing started
+static float last_temp_reading = 0.0f;   // Last temperature reading for progress check
+
+// Infusion state
+static uint16_t infusion_target_seconds = 0;  // Target infusion time in seconds
+static uint16_t infusion_elapsed_seconds = 0; // Elapsed infusion time in seconds
 
 // NVS save task handle
 static TaskHandle_t nvs_save_task_handle = NULL;
@@ -51,6 +90,16 @@ static void pot_timeout_timer_callback(TimerHandle_t xTimer);
 static void on_pot_presence_update(bool is_present, uint16_t distance_mm);
 static void start_pot_detection(bool for_scheduler);
 static void stop_pot_detection(void);
+
+/* Brewing state machine forward declarations */
+static void brewing_pot_check_callback(TimerHandle_t xTimer);
+static void brewing_timeout_callback(TimerHandle_t xTimer);
+static void infusion_timer_callback(TimerHandle_t xTimer);
+static void on_brewing_pot_presence(bool is_present, uint16_t distance_mm);
+static void start_brewing_state(void);
+static void start_infusing_state(void);
+static void stop_brew_process(const char *error_message);
+static void finish_infusion(void);
 
 /* ============================================
    NVS SAVE TASK
@@ -107,11 +156,11 @@ void ui_events_init(void)
     /* Register pot presence callback */
     uart_comm_set_pot_presence_callback(on_pot_presence_update);
     
-    /* Create temperature request timer (5 second interval) */
+    /* Create temperature request timer (starts with idle interval) */
     if (temperature_request_timer == NULL) {
         temperature_request_timer = xTimerCreate(
             "temp_timer",
-            pdMS_TO_TICKS(5000),  // 5 seconds
+            pdMS_TO_TICKS(TEMP_UPDATE_INTERVAL_IDLE_MS),  // Start with 10 second interval
             pdTRUE,               // Auto-reload
             NULL,
             temperature_request_timer_callback
@@ -119,7 +168,7 @@ void ui_events_init(void)
         
         if (temperature_request_timer != NULL) {
             xTimerStart(temperature_request_timer, 0);
-            ESP_LOGI(TAG, "Temperature request timer started (5s interval)");
+            ESP_LOGI(TAG, "Temperature request timer started (%d ms interval)", TEMP_UPDATE_INTERVAL_IDLE_MS);
         } else {
             ESP_LOGE(TAG, "Failed to create temperature request timer");
         }
@@ -157,20 +206,362 @@ static void temperature_request_timer_callback(TimerHandle_t xTimer)
 // Temperature callback - update UI when temperature received
 static void on_temperature_update(float object_temp, float ambient_temp)
 {
-    /* Update the temperature label on MainScreen */
+    /* Store last reading for progress checks */
+    last_temp_reading = object_temp;
+    
     /* Must use LVGL port lock since this is called from UART task */
-    extern lv_obj_t * ui_Temperature;
-    if (ui_Temperature != NULL) {
-        if (lvgl_port_lock(100)) {  /* 100ms timeout */
-            char temp_str[32];
+    if (lvgl_port_lock(100)) {  /* 100ms timeout */
+        char temp_str[32];
+        
+        /* Update the temperature label on MainScreen */
+        extern lv_obj_t * ui_Temperature;
+        if (ui_Temperature != NULL) {
 #if TEMPERATURE_DEBUG
             snprintf(temp_str, sizeof(temp_str), "%.1f °C\n%.1f °C", object_temp, ambient_temp);
 #else
             snprintf(temp_str, sizeof(temp_str), "%.1f °C", object_temp);
 #endif
             lv_label_set_text(ui_Temperature, temp_str);
-            lvgl_port_unlock();
         }
+        
+        /* Handle BREWING state */
+        if (current_brew_state == BREW_STATE_BREWING) {
+            extern lv_obj_t * ui_BrewInfuseCurrentValue;
+            extern lv_obj_t * ui_brewingArc;
+            
+            /* Capture starting temperature on first reading */
+            if (!brewing_start_temp_captured) {
+                brewing_start_temp = object_temp;
+                brewing_start_temp_captured = true;
+                brewing_start_time = xTaskGetTickCount();
+                ESP_LOGI(TAG, "Brewing start temp captured: %.1f °C, target: %d °C", 
+                         brewing_start_temp, brewing_target_temp);
+            }
+            
+            /* Check if temperature hasn't increased by threshold after warmup timeout */
+            uint32_t elapsed_ms = (xTaskGetTickCount() - brewing_start_time) * portTICK_PERIOD_MS;
+            if (elapsed_ms >= BREWING_WARMUP_TIMEOUT_MS) {
+                if (object_temp < brewing_start_temp + MIN_TEMP_INCREASE_THRESHOLD) {
+                    lvgl_port_unlock();
+                    stop_brew_process("Teapot took too long to start heating. Please check the heating element.");
+                    return;
+                }
+            }
+            
+            /* Check if target temperature reached - transition to INFUSING */
+            if (object_temp >= (float)brewing_target_temp) {
+                ESP_LOGI(TAG, "Target temperature reached! Transitioning to INFUSING state");
+                lvgl_port_unlock();
+                start_infusing_state();
+                return;
+            }
+            
+            /* Update current temperature label */
+            if (ui_BrewInfuseCurrentValue != NULL) {
+                snprintf(temp_str, sizeof(temp_str), "%.1f °C", object_temp);
+                lv_label_set_text(ui_BrewInfuseCurrentValue, temp_str);
+            }
+            
+            /* Update arc progress */
+            if (ui_brewingArc != NULL) {
+                int32_t arc_value = 0;
+                
+                /* Calculate progress: 0% at room temp, 100% at target temp */
+                float temp_range = (float)brewing_target_temp - brewing_start_temp;
+                if (temp_range > 0.0f) {
+                    float progress = (object_temp - brewing_start_temp) / temp_range * 100.0f;
+                    
+                    /* Clamp to 0-100 range */
+                    if (progress < 0.0f) {
+                        arc_value = 0;
+                    } else if (progress > 100.0f) {
+                        arc_value = 100;
+                    } else {
+                        arc_value = (int32_t)progress;
+                    }
+                }
+                
+                lv_arc_set_value(ui_brewingArc, arc_value);
+            }
+        }
+        
+        lvgl_port_unlock();
+    }
+}
+
+/* ============================================
+   BREWING STATE MACHINE FUNCTIONS
+   ============================================ */
+
+// Pot check during brewing/infusing (every 5 seconds)
+static void brewing_pot_check_callback(TimerHandle_t xTimer)
+{
+    if (current_brew_state == BREW_STATE_BREWING || current_brew_state == BREW_STATE_INFUSING) {
+        uart_comm_get_pot_presence();
+    }
+}
+
+// Handle pot presence response during brewing/infusing
+static void on_brewing_pot_presence(bool is_present, uint16_t distance_mm)
+{
+    if (!is_present) {
+        ESP_LOGW(TAG, "Pot removed during %s!", 
+                 current_brew_state == BREW_STATE_BREWING ? "brewing" : "infusing");
+        stop_brew_process("Teapot was removed during the brewing process.");
+    }
+}
+
+// Brewing timeout callback (20 minutes)
+static void brewing_timeout_callback(TimerHandle_t xTimer)
+{
+    if (current_brew_state == BREW_STATE_BREWING) {
+        ESP_LOGW(TAG, "Brewing timeout (20 minutes)");
+        stop_brew_process("Tea took too long to reach the target temperature. Please check the heating element.");
+    }
+}
+
+// Infusion timer callback (every 1 second)
+static void infusion_timer_callback(TimerHandle_t xTimer)
+{
+    if (current_brew_state != BREW_STATE_INFUSING) {
+        return;
+    }
+    
+    infusion_elapsed_seconds++;
+    
+    // Check if infusion complete
+    if (infusion_elapsed_seconds >= infusion_target_seconds) {
+        finish_infusion();
+        return;
+    }
+    
+    // Update UI
+    if (lvgl_port_lock(100)) {
+        extern lv_obj_t * ui_BrewInfuseCurrentValue;
+        extern lv_obj_t * ui_brewingArc;
+        
+        // Update elapsed time display (mm:ss)
+        if (ui_BrewInfuseCurrentValue != NULL) {
+            char time_str[16];
+            uint16_t mins = infusion_elapsed_seconds / 60;
+            uint16_t secs = infusion_elapsed_seconds % 60;
+            snprintf(time_str, sizeof(time_str), "%02d:%02d", mins, secs);
+            lv_label_set_text(ui_BrewInfuseCurrentValue, time_str);
+        }
+        
+        // Update arc progress (0-100 based on elapsed/target)
+        if (ui_brewingArc != NULL) {
+            int32_t arc_value = 0;
+            if (infusion_target_seconds > 0) {
+                arc_value = (infusion_elapsed_seconds * 100) / infusion_target_seconds;
+                if (arc_value > 100) arc_value = 100;
+            }
+            lv_arc_set_value(ui_brewingArc, arc_value);
+        }
+        
+        lvgl_port_unlock();
+    }
+}
+
+// Start the brewing state
+static void start_brewing_state(void)
+{
+    current_brew_state = BREW_STATE_BREWING;
+    brewing_start_temp_captured = false;
+    brewing_start_temp = 25.0f;
+    brewing_start_time = 0;
+    
+    // Get target temperature
+    brewing_target_temp = settings_get_tea_temperature(current_tea_index);
+    
+    ESP_LOGI(TAG, "Starting brew - target temp: %d °C", brewing_target_temp);
+    
+    // Turn on induction cooker
+    uart_comm_induction_on();
+    
+    // Switch temperature timer to fast interval (1 second) during brewing
+    if (temperature_request_timer != NULL) {
+        xTimerChangePeriod(temperature_request_timer, pdMS_TO_TICKS(TEMP_UPDATE_INTERVAL_BREWING_MS), 0);
+        ESP_LOGI(TAG, "Temperature timer switched to %d ms interval", TEMP_UPDATE_INTERVAL_BREWING_MS);
+    }
+    
+    // Create pot check timer (5 second interval)
+    if (brewing_pot_check_timer == NULL) {
+        brewing_pot_check_timer = xTimerCreate(
+            "brew_pot",
+            pdMS_TO_TICKS(BREWING_POT_CHECK_INTERVAL_MS),
+            pdTRUE,  // Auto-reload
+            NULL,
+            brewing_pot_check_callback
+        );
+    }
+    
+    // Create brewing timeout timer (max brewing time, one-shot)
+    if (brewing_timeout_timer == NULL) {
+        brewing_timeout_timer = xTimerCreate(
+            "brew_timeout",
+            pdMS_TO_TICKS(BREWING_MAX_TIMEOUT_MS),
+            pdFALSE,  // One-shot
+            NULL,
+            brewing_timeout_callback
+        );
+    }
+    
+    // Start timers
+    if (brewing_pot_check_timer != NULL) {
+        xTimerStart(brewing_pot_check_timer, 0);
+    }
+    if (brewing_timeout_timer != NULL) {
+        xTimerStart(brewing_timeout_timer, 0);
+    }
+}
+
+// Transition to infusing state
+static void start_infusing_state(void)
+{
+    current_brew_state = BREW_STATE_INFUSING;
+    
+    // Turn off induction cooker - water is hot enough
+    uart_comm_induction_off();
+    
+    // Stop brewing timeout timer (no longer needed)
+    if (brewing_timeout_timer != NULL) {
+        xTimerStop(brewing_timeout_timer, 0);
+    }
+    
+    // Get infusion time from settings
+    infusion_target_seconds = settings_get_tea_infusion_time(current_tea_index);
+    infusion_elapsed_seconds = 0;
+    
+    ESP_LOGI(TAG, "Starting infusion - target time: %d seconds", infusion_target_seconds);
+    
+    // Update UI for infusion mode
+    if (lvgl_port_lock(100)) {
+        extern lv_obj_t * ui_BrewInfuseTitle;
+        extern lv_obj_t * ui_BrewInfuseCurrentValue;
+        extern lv_obj_t * ui_BrewInfuseSetValue;
+        extern lv_obj_t * ui_brewingArc;
+        
+        // Change title to "Infuse"
+        if (ui_BrewInfuseTitle != NULL) {
+            lv_label_set_text(ui_BrewInfuseTitle, "Infuse");
+        }
+        
+        // Set current value to 00:00
+        if (ui_BrewInfuseCurrentValue != NULL) {
+            lv_label_set_text(ui_BrewInfuseCurrentValue, "00:00");
+        }
+        
+        // Set target time display (mm:ss)
+        if (ui_BrewInfuseSetValue != NULL) {
+            char time_str[16];
+            uint16_t mins = infusion_target_seconds / 60;
+            uint16_t secs = infusion_target_seconds % 60;
+            snprintf(time_str, sizeof(time_str), "%02d:%02d", mins, secs);
+            lv_label_set_text(ui_BrewInfuseSetValue, time_str);
+        }
+        
+        // Reset arc to 0
+        if (ui_brewingArc != NULL) {
+            lv_arc_set_value(ui_brewingArc, 0);
+        }
+        
+        lvgl_port_unlock();
+    }
+    
+    // Create infusion timer (1 second interval)
+    if (infusion_timer == NULL) {
+        infusion_timer = xTimerCreate(
+            "infuse",
+            pdMS_TO_TICKS(1000),
+            pdTRUE,  // Auto-reload
+            NULL,
+            infusion_timer_callback
+        );
+    }
+    
+    // Start infusion timer
+    if (infusion_timer != NULL) {
+        xTimerStart(infusion_timer, 0);
+    }
+}
+
+// Stop brewing/infusing process with error
+static void stop_brew_process(const char *error_message)
+{
+    ESP_LOGW(TAG, "Stopping brew process: %s", error_message);
+    
+    // Turn off induction cooker immediately
+    uart_comm_induction_off();
+    
+    // Stop all brewing-related timers
+    if (brewing_pot_check_timer != NULL) {
+        xTimerStop(brewing_pot_check_timer, 0);
+    }
+    if (brewing_timeout_timer != NULL) {
+        xTimerStop(brewing_timeout_timer, 0);
+    }
+    if (infusion_timer != NULL) {
+        xTimerStop(infusion_timer, 0);
+    }
+    
+    // Switch temperature timer back to slow interval (10 seconds)
+    if (temperature_request_timer != NULL) {
+        xTimerChangePeriod(temperature_request_timer, pdMS_TO_TICKS(TEMP_UPDATE_INTERVAL_IDLE_MS), 0);
+        ESP_LOGI(TAG, "Temperature timer switched to %d ms interval", TEMP_UPDATE_INTERVAL_IDLE_MS);
+    }
+    
+    // Reset state
+    current_brew_state = BREW_STATE_IDLE;
+    brewing_start_temp_captured = false;
+    
+    // Show error screen
+    if (lvgl_port_lock(100)) {
+        extern lv_obj_t * ui_ErrorScreen;
+        extern lv_obj_t * ui_TextArea1;
+        
+        if (ui_ErrorScreen) {
+            _ui_screen_change(&ui_ErrorScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_ErrorScreen_screen_init);
+        }
+        
+        if (ui_TextArea1 && error_message) {
+            lv_textarea_set_text(ui_TextArea1, error_message);
+        }
+        
+        lvgl_port_unlock();
+    }
+}
+
+// Finish infusion successfully
+static void finish_infusion(void)
+{
+    ESP_LOGI(TAG, "Infusion complete!");
+    
+    // Stop all brewing-related timers
+    if (brewing_pot_check_timer != NULL) {
+        xTimerStop(brewing_pot_check_timer, 0);
+    }
+    if (infusion_timer != NULL) {
+        xTimerStop(infusion_timer, 0);
+    }
+    
+    // Change temperature update back to slow interval (idle mode)
+    if (temperature_request_timer != NULL) {
+        xTimerChangePeriod(temperature_request_timer, pdMS_TO_TICKS(TEMP_UPDATE_INTERVAL_IDLE_MS), 0);
+        ESP_LOGI(TAG, "Temperature update interval changed to %d ms (idle mode)", TEMP_UPDATE_INTERVAL_IDLE_MS);
+    }
+    
+    // Reset state
+    current_brew_state = BREW_STATE_IDLE;
+    brewing_start_temp_captured = false;
+    
+    // Go to main screen
+    if (lvgl_port_lock(100)) {
+        extern lv_obj_t * ui_MainScreen;
+        if (ui_MainScreen) {
+            _ui_screen_change(&ui_MainScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_MainScreen_screen_init);
+        }
+        lvgl_port_unlock();
     }
 }
 
@@ -181,6 +572,12 @@ static void on_temperature_update(float object_temp, float ambient_temp)
 // Pot presence callback - called from UART task when pot presence response received
 static void on_pot_presence_update(bool is_present, uint16_t distance_mm)
 {
+    // Check if this is for brewing/infusing pot monitoring
+    if (current_brew_state == BREW_STATE_BREWING || current_brew_state == BREW_STATE_INFUSING) {
+        on_brewing_pot_presence(is_present, distance_mm);
+        return;
+    }
+    
     if (!pot_waiting_for_presence) {
         return;  // Not waiting for pot, ignore
     }
@@ -218,9 +615,9 @@ static void on_pot_presence_update(bool is_present, uint16_t distance_mm)
             pot_present_start_time = xTaskGetTickCount();
             ESP_LOGI(TAG, "Pot detected, waiting 3 seconds for confirmation...");
         } else {
-            // Check if pot has been present for 3 seconds
-            uint32_t elapsed_ms = (xTaskGetTickCount() - pot_present_start_time) * portTICK_PERIOD_MS;
-            if (elapsed_ms >= 3000) {
+            // Check if pot has been present for confirmation time
+            uint32_t elapsed_ms = ((TickType_t)xTaskGetTickCount() - (TickType_t)pot_present_start_time) * portTICK_PERIOD_MS;
+            if (elapsed_ms >= POT_CONFIRMATION_TIME_MS) {
                 // Pot confirmed present for 3 seconds - proceed
                 ESP_LOGI(TAG, "Pot confirmed present for 3 seconds!");
                 bool for_scheduler = pot_detection_for_scheduler;
@@ -245,7 +642,7 @@ static void on_pot_presence_update(bool is_present, uint16_t distance_mm)
                         // Update brewing title
                         extern lv_obj_t * ui_BrewInfuseTitle;
                         if (ui_BrewInfuseTitle) {
-                            lv_label_set_text(ui_BrewInfuseTitle, "Brewing");
+                            lv_label_set_text(ui_BrewInfuseTitle, "Brew");
                         }
                     }
                     lvgl_port_unlock();
@@ -294,18 +691,18 @@ static void start_pot_detection(bool for_scheduler)
     if (pot_check_timer == NULL) {
         pot_check_timer = xTimerCreate(
             "pot_check",
-            pdMS_TO_TICKS(250),
+            pdMS_TO_TICKS(POT_CHECK_INTERVAL_MS),
             pdTRUE,  // Auto-reload
             NULL,
             pot_check_timer_callback
         );
     }
     
-    // Create pot timeout timer (60 seconds, one-shot)
+    // Create pot timeout timer (one-shot)
     if (pot_timeout_timer == NULL) {
         pot_timeout_timer = xTimerCreate(
             "pot_timeout",
-            pdMS_TO_TICKS(60000),
+            pdMS_TO_TICKS(POT_DETECTION_TIMEOUT_MS),
             pdFALSE,  // One-shot
             NULL,
             pot_timeout_timer_callback
@@ -358,7 +755,41 @@ void check_and_save_pending_nvs(void)
    ============================================ */
 void stopBrewing(lv_event_t * e)
 {
-    // Your code here
+    if (current_brew_state == BREW_STATE_INFUSING) {
+        ESP_LOGI(TAG, "Stopped during infusing");
+    } else if (current_brew_state == BREW_STATE_BREWING) {
+        ESP_LOGI(TAG, "Stopping brew");
+    }
+    
+    // Turn off induction cooker
+    uart_comm_induction_off();
+    
+    // Stop all brewing-related timers
+    if (brewing_pot_check_timer != NULL) {
+        xTimerStop(brewing_pot_check_timer, 0);
+    }
+    if (brewing_timeout_timer != NULL) {
+        xTimerStop(brewing_timeout_timer, 0);
+    }
+    if (infusion_timer != NULL) {
+        xTimerStop(infusion_timer, 0);
+    }
+    
+    // Change temperature update back to slow interval (idle mode)
+    if (temperature_request_timer != NULL) {
+        xTimerChangePeriod(temperature_request_timer, pdMS_TO_TICKS(TEMP_UPDATE_INTERVAL_IDLE_MS), 0);
+        ESP_LOGI(TAG, "Temperature update interval changed to %d ms (idle mode)", TEMP_UPDATE_INTERVAL_IDLE_MS);
+    }
+    
+    // Reset state
+    current_brew_state = BREW_STATE_IDLE;
+    brewing_start_temp_captured = false;
+    
+    // Navigate back to MainScreen
+    extern lv_obj_t * ui_MainScreen;
+    if (ui_MainScreen) {
+        _ui_screen_change(&ui_MainScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_MainScreen_screen_init);
+    }
 }
 
 void nextTeaScreen(lv_event_t * e)
@@ -707,6 +1138,21 @@ void onMainScreen(lv_event_t * e)
     if (pot_waiting_for_presence) {
         stop_pot_detection();
     }
+    
+    // Reset brewing state if we got here somehow during brewing
+    if (current_brew_state != BREW_STATE_IDLE) {
+        if (brewing_pot_check_timer != NULL) {
+            xTimerStop(brewing_pot_check_timer, 0);
+        }
+        if (brewing_timeout_timer != NULL) {
+            xTimerStop(brewing_timeout_timer, 0);
+        }
+        if (infusion_timer != NULL) {
+            xTimerStop(infusion_timer, 0);
+        }
+        current_brew_state = BREW_STATE_IDLE;
+        brewing_start_temp_captured = false;
+    }
 }
 
 void onTeaScreen(lv_event_t * e)
@@ -734,6 +1180,33 @@ void onBrewInfuseScreen(lv_event_t * e)
     if (pot_waiting_for_presence) {
         stop_pot_detection();
     }
+    
+    // Start the brewing state machine
+    start_brewing_state();
+    
+    // Update the set value label with target temperature
+    extern lv_obj_t * ui_BrewInfuseSetValue;
+    extern lv_obj_t * ui_BrewInfuseTitle;
+    extern lv_obj_t * ui_brewingArc;
+    
+    // Set title to "Brew"
+    if (ui_BrewInfuseTitle != NULL) {
+        lv_label_set_text(ui_BrewInfuseTitle, "Brew");
+    }
+    
+    if (ui_BrewInfuseSetValue != NULL) {
+        char temp_str[16];
+        snprintf(temp_str, sizeof(temp_str), "%d °C", brewing_target_temp);
+        lv_label_set_text(ui_BrewInfuseSetValue, temp_str);
+    }
+    
+    // Reset arc to 0
+    if (ui_brewingArc != NULL) {
+        lv_arc_set_value(ui_brewingArc, 0);
+    }
+    
+    // Request immediate temperature update
+    uart_comm_get_temperature();
 }
 
 void onErrorScreen(lv_event_t * e)

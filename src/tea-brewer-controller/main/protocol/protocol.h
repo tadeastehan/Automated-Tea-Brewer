@@ -46,6 +46,8 @@ typedef enum
     CMD_CLEAR_CALIBRATION = 0x41,
     CMD_GET_TEMPERATURE = 0x50,
     CMD_GET_POT_PRESENCE = 0x51,
+    CMD_INDUCTION_ON = 0x52,
+    CMD_INDUCTION_OFF = 0x53,
 
     /* Responses (Motor Controller -> Display) */
     RSP_ACK = 0x80,
