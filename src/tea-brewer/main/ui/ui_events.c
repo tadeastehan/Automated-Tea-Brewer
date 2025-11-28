@@ -29,6 +29,14 @@ static volatile bool tea_params_save_pending = false;
 static TimerHandle_t drying_position_save_timer = NULL;
 static TimerHandle_t tea_params_save_timer = NULL;
 static TimerHandle_t temperature_request_timer = NULL;
+static TimerHandle_t pot_check_timer = NULL;
+static TimerHandle_t pot_timeout_timer = NULL;
+
+// Pot detection state
+static uint32_t pot_present_start_time = 0;
+static bool pot_waiting_for_presence = false;
+static bool pot_detection_for_scheduler = false;  // true = scheduler, false = brew now
+static volatile bool pot_timeout_triggered = false;  // Flag for timeout handling
 
 // NVS save task handle
 static TaskHandle_t nvs_save_task_handle = NULL;
@@ -38,6 +46,11 @@ uint8_t current_tea_index = 0;  // Currently selected tea (0 = first tea)
 /* Forward declarations */
 static void temperature_request_timer_callback(TimerHandle_t xTimer);
 static void on_temperature_update(float object_temp, float ambient_temp);
+static void pot_check_timer_callback(TimerHandle_t xTimer);
+static void pot_timeout_timer_callback(TimerHandle_t xTimer);
+static void on_pot_presence_update(bool is_present, uint16_t distance_mm);
+static void start_pot_detection(bool for_scheduler);
+static void stop_pot_detection(void);
 
 /* ============================================
    NVS SAVE TASK
@@ -90,6 +103,9 @@ void ui_events_init(void)
     
     /* Register temperature callback */
     uart_comm_set_temperature_callback(on_temperature_update);
+    
+    /* Register pot presence callback */
+    uart_comm_set_pot_presence_callback(on_pot_presence_update);
     
     /* Create temperature request timer (5 second interval) */
     if (temperature_request_timer == NULL) {
@@ -158,6 +174,176 @@ static void on_temperature_update(float object_temp, float ambient_temp)
     }
 }
 
+/* ============================================
+   POT DETECTION FUNCTIONS
+   ============================================ */
+
+// Pot presence callback - called from UART task when pot presence response received
+static void on_pot_presence_update(bool is_present, uint16_t distance_mm)
+{
+    if (!pot_waiting_for_presence) {
+        return;  // Not waiting for pot, ignore
+    }
+    
+    // Check if timeout was triggered
+    if (pot_timeout_triggered) {
+        ESP_LOGW(TAG, "Handling pot timeout - showing error screen");
+        pot_timeout_triggered = false;
+        stop_pot_detection();
+        
+        // Switch to ErrorScreen and show error message
+        if (lvgl_port_lock(100)) {
+            extern lv_obj_t * ui_ErrorScreen;
+            extern lv_obj_t * ui_TextArea1;
+            
+            if (ui_ErrorScreen) {
+                _ui_screen_change(&ui_ErrorScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_ErrorScreen_screen_init);
+            }
+            
+            if (ui_TextArea1) {
+                lv_textarea_set_text(ui_TextArea1, "Teapot was not detected for 60 seconds.");
+            }
+            
+            lvgl_port_unlock();
+        }
+        return;
+    }
+    
+    ESP_LOGD(TAG, "Pot presence: %s, distance: %u mm", is_present ? "YES" : "NO", distance_mm);
+    
+    if (is_present) {
+        // Pot detected
+        if (pot_present_start_time == 0) {
+            // First detection - start the 3 second timer
+            pot_present_start_time = xTaskGetTickCount();
+            ESP_LOGI(TAG, "Pot detected, waiting 3 seconds for confirmation...");
+        } else {
+            // Check if pot has been present for 3 seconds
+            uint32_t elapsed_ms = (xTaskGetTickCount() - pot_present_start_time) * portTICK_PERIOD_MS;
+            if (elapsed_ms >= 3000) {
+                // Pot confirmed present for 3 seconds - proceed
+                ESP_LOGI(TAG, "Pot confirmed present for 3 seconds!");
+                bool for_scheduler = pot_detection_for_scheduler;
+                stop_pot_detection();
+                
+                if (lvgl_port_lock(100)) {
+                    if (for_scheduler) {
+                        // Scheduler mode - go to ScheduledScreen
+                        ESP_LOGI(TAG, "Starting scheduler...");
+                        extern lv_obj_t * ui_ScheduledScreen;
+                        if (ui_ScheduledScreen) {
+                            _ui_screen_change(&ui_ScheduledScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_ScheduledScreen_screen_init);
+                        }
+                    } else {
+                        // Brew now mode - go to BrewInfuseScreen
+                        ESP_LOGI(TAG, "Starting brew...");
+                        extern lv_obj_t * ui_BrewInfuseScreen;
+                        if (ui_BrewInfuseScreen) {
+                            _ui_screen_change(&ui_BrewInfuseScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_BrewInfuseScreen_screen_init);
+                        }
+                        
+                        // Update brewing title
+                        extern lv_obj_t * ui_BrewInfuseTitle;
+                        if (ui_BrewInfuseTitle) {
+                            lv_label_set_text(ui_BrewInfuseTitle, "Brewing");
+                        }
+                    }
+                    lvgl_port_unlock();
+                }
+            }
+        }
+    } else {
+        // Pot not detected - reset the confirmation timer
+        if (pot_present_start_time != 0) {
+            ESP_LOGI(TAG, "Pot removed, resetting confirmation timer");
+            pot_present_start_time = 0;
+        }
+    }
+}
+
+// Timer callback - request pot presence every 250ms
+static void pot_check_timer_callback(TimerHandle_t xTimer)
+{
+    if (pot_waiting_for_presence) {
+        uart_comm_get_pot_presence();
+    }
+}
+
+// Timer callback - 60 second timeout
+// NOTE: Keep this minimal - timer callbacks have limited stack!
+static void pot_timeout_timer_callback(TimerHandle_t xTimer)
+{
+    ESP_LOGW(TAG, "Pot detection timeout (60s)");
+    pot_timeout_triggered = true;
+    // Stop the check timer
+    if (pot_check_timer != NULL) {
+        xTimerStop(pot_check_timer, 0);
+    }
+    // Request one final pot presence check - the response callback will handle the timeout UI
+    uart_comm_get_pot_presence();
+}
+
+// Start pot detection process
+static void start_pot_detection(bool for_scheduler)
+{
+    pot_waiting_for_presence = true;
+    pot_present_start_time = 0;
+    pot_detection_for_scheduler = for_scheduler;
+    
+    // Create pot check timer (250ms interval)
+    if (pot_check_timer == NULL) {
+        pot_check_timer = xTimerCreate(
+            "pot_check",
+            pdMS_TO_TICKS(250),
+            pdTRUE,  // Auto-reload
+            NULL,
+            pot_check_timer_callback
+        );
+    }
+    
+    // Create pot timeout timer (60 seconds, one-shot)
+    if (pot_timeout_timer == NULL) {
+        pot_timeout_timer = xTimerCreate(
+            "pot_timeout",
+            pdMS_TO_TICKS(60000),
+            pdFALSE,  // One-shot
+            NULL,
+            pot_timeout_timer_callback
+        );
+    }
+    
+    // Start timers
+    if (pot_check_timer != NULL) {
+        xTimerStart(pot_check_timer, 0);
+    }
+    if (pot_timeout_timer != NULL) {
+        xTimerStart(pot_timeout_timer, 0);
+    }
+    
+    // Request initial pot presence
+    uart_comm_get_pot_presence();
+    
+    ESP_LOGI(TAG, "Pot detection started (60s timeout, mode: %s)", 
+             for_scheduler ? "scheduler" : "brew now");
+}
+
+// Stop pot detection process
+static void stop_pot_detection(void)
+{
+    pot_waiting_for_presence = false;
+    pot_present_start_time = 0;
+    pot_timeout_triggered = false;  // Reset timeout flag
+    
+    if (pot_check_timer != NULL) {
+        xTimerStop(pot_check_timer, 0);
+    }
+    if (pot_timeout_timer != NULL) {
+        xTimerStop(pot_timeout_timer, 0);
+    }
+    
+    ESP_LOGI(TAG, "Pot detection stopped");
+}
+
 // Call this on screen changes (optional extra safety)
 void check_and_save_pending_nvs(void)
 {
@@ -170,12 +356,6 @@ void check_and_save_pending_nvs(void)
 /* ============================================
    EVENT HANDLERS
    ============================================ */
-
-void checkPot(lv_event_t * e)
-{
-    // Your code here
-}
-
 void stopBrewing(lv_event_t * e)
 {
     // Your code here
@@ -348,12 +528,27 @@ void ReturnToTeaScreen(lv_event_t * e)
 
 void brewNow(lv_event_t * e)
 {
-    // Your code here
-}
-
-void startBrewing(lv_event_t * e)
-{
-    // Your code here
+    ESP_LOGI(TAG, "Brew Now pressed, checking pot presence...");
+    
+    // First check if pot is already present (quick check)
+    bool is_present = false;
+    uint16_t distance_mm = 0;
+    uart_comm_get_cached_pot_presence(&is_present, &distance_mm);
+    
+    if (is_present) {
+        // Pot seems to be present, but we still need 3 second confirmation
+        // Go to TeapotScreen and start detection
+        ESP_LOGI(TAG, "Pot may be present (cached), starting confirmation...");
+    }
+    
+    // Switch to TeapotScreen
+    extern lv_obj_t * ui_TeapotScreen;
+    if (ui_TeapotScreen) {
+        _ui_screen_change(&ui_TeapotScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeapotScreen_screen_init);
+    }
+    
+    // Start pot detection process (for brew now, not scheduler)
+    start_pot_detection(false);
 }
 
 void changeBrewingTeaTemperature(lv_event_t * e)
@@ -476,7 +671,26 @@ void changeSchedulerTimeHour(lv_event_t * e)
 
 void beginScheduler(lv_event_t * e)
 {
-    // Your code here
+    ESP_LOGI(TAG, "Begin Scheduler pressed, checking pot presence...");
+    
+    // First check if pot is already present (quick check)
+    bool is_present = false;
+    uint16_t distance_mm = 0;
+    uart_comm_get_cached_pot_presence(&is_present, &distance_mm);
+    
+    if (is_present) {
+        // Pot seems to be present, but we still need 3 second confirmation
+        ESP_LOGI(TAG, "Pot may be present (cached), starting confirmation...");
+    }
+    
+    // Switch to TeapotScreen
+    extern lv_obj_t * ui_TeapotScreen;
+    if (ui_TeapotScreen) {
+        _ui_screen_change(&ui_TeapotScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_TeapotScreen_screen_init);
+    }
+    
+    // Start pot detection process (for scheduler)
+    start_pot_detection(true);
 }
 
 void stopScheduledBrew(lv_event_t * e)
@@ -488,6 +702,11 @@ void onMainScreen(lv_event_t * e)
 {
     ui_screen_state.current_screen = UI_SCREEN_MAIN;
     check_and_save_pending_nvs();
+    
+    // Stop pot detection if it was running
+    if (pot_waiting_for_presence) {
+        stop_pot_detection();
+    }
 }
 
 void onTeaScreen(lv_event_t * e)
@@ -503,12 +722,18 @@ void onTeapotScreen(lv_event_t * e)
 {
     ui_screen_state.current_screen = UI_SCREEN_TEAPOT;
     check_and_save_pending_nvs();
+    // Note: pot detection is started by brewNow(), not here
 }
 
 void onBrewInfuseScreen(lv_event_t * e)
 {
     ui_screen_state.current_screen = UI_SCREEN_BREW_INFUSE;
     check_and_save_pending_nvs();
+    
+    // Stop pot detection if it was still running (shouldn't be, but just in case)
+    if (pot_waiting_for_presence) {
+        stop_pot_detection();
+    }
 }
 
 void onErrorScreen(lv_event_t * e)

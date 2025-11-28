@@ -118,6 +118,15 @@ uint8_t proto_build_temperature(uint8_t *buffer, float object_temp, float ambien
     return proto_build_frame(buffer, RSP_TEMPERATURE, data, 8);
 }
 
+uint8_t proto_build_pot_presence(uint8_t *buffer, bool is_present, uint16_t distance_mm)
+{
+    uint8_t data[3];
+    data[0] = is_present ? 1 : 0;
+    memcpy(&data[1], &distance_mm, 2);
+    
+    return proto_build_frame(buffer, RSP_POT_PRESENCE, data, 3);
+}
+
 /* ============================================
    FRAME PARSING
    ============================================ */

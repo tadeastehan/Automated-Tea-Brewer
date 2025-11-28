@@ -29,6 +29,7 @@
 #include "console/uart_comm.h"
 #include "temperature_sensor/thermometer.h"
 #include "distance_sensor/distance_sensor.h"
+#include "pot_sensor/pot_sensor.h"
 
 static const char *TAG = "MAIN";
 
@@ -98,17 +99,20 @@ static void print_startup_status(void)
 /**
  * @brief Distance sensor reading task
  * 
- * Reads and prints distance every 250ms
+ * Reads and prints distance every 250ms and shows pot status
  */
 static void distance_task(void *arg)
 {
     uint16_t distance_mm;
+    bool pot_present;
     
     while (1) {
-        if (distance_sensor_is_initialized()) {
-            esp_err_t ret = distance_sensor_get_distance(&distance_mm);
+        if (pot_sensor_is_initialized()) {
+            esp_err_t ret = pot_sensor_get_distance(&distance_mm);
             if (ret == ESP_OK) {
-                console_printf("Distance: %u mm\r\n", distance_mm);
+                pot_present = pot_sensor_is_present();
+                console_printf("Distance: %u mm | Pot: %s\r\n", 
+                              distance_mm, pot_present ? "PRESENT" : "NOT PRESENT");
             } else {
                 console_printf("Distance: ERROR\r\n");
             }
@@ -189,6 +193,18 @@ void app_main(void)
     }
     
     /* ========================================
+       STEP 5.6: Initialize Pot Sensor
+       ======================================== */
+    console_printf("Initializing pot sensor...\r\n");
+    ret = pot_sensor_init();
+    if (ret == ESP_OK) {
+        console_printf("Pot sensor: OK (threshold: %u mm)\r\n", pot_sensor_get_threshold());
+    } else {
+        console_printf("Pot sensor: FAILED\r\n");
+        ESP_LOGW(TAG, "Pot sensor init failed: %s", esp_err_to_name(ret));
+    }
+    
+    /* ========================================
        STEP 6: Initialize UART Communication
        ======================================== */
     console_printf("Initializing UART...\r\n");
@@ -219,9 +235,9 @@ void app_main(void)
     uart_comm_start_task();
     
     /* Start distance sensor reading task */
-    if (distance_sensor_is_initialized()) {
+    if (pot_sensor_is_initialized()) {
         xTaskCreate(distance_task, "distance_task", 2048, NULL, 5, NULL);
-        ESP_LOGI(TAG, "Distance sensor task started (250ms interval)");
+        ESP_LOGI(TAG, "Pot sensor task started (250ms interval)");
     }
     
     ESP_LOGI(TAG, "System ready!");

@@ -35,6 +35,7 @@ static const char *TAG = "UART_COMM";
 #define CMD_SAVE_CALIBRATION    0x40
 #define CMD_CLEAR_CALIBRATION   0x41
 #define CMD_GET_TEMPERATURE     0x50
+#define CMD_GET_POT_PRESENCE    0x51
 
 /* Response IDs */
 #define RSP_ACK                 0x80
@@ -44,6 +45,7 @@ static const char *TAG = "UART_COMM";
 #define RSP_SGT                 0x84
 #define RSP_PONG                0x85
 #define RSP_TEMPERATURE         0x86
+#define RSP_POT_PRESENCE        0x87
 
 /* Notification IDs */
 #define NOTIFY_MOVE_COMPLETE    0xA0
@@ -78,10 +80,15 @@ static uart_comm_home_complete_cb_t home_complete_callback = NULL;
 static uart_comm_calibrate_complete_cb_t calibrate_complete_callback = NULL;
 static uart_comm_error_cb_t error_callback = NULL;
 static uart_comm_temperature_cb_t temperature_callback = NULL;
+static uart_comm_pot_presence_cb_t pot_presence_callback = NULL;
 
 /* Cached temperature */
 static float cached_object_temp = 0.0f;
 static float cached_ambient_temp = 0.0f;
+
+/* Cached pot presence */
+static bool cached_pot_present = false;
+static uint16_t cached_pot_distance_mm = 0;
 
 /* TX buffer */
 static uint8_t tx_buffer[64];
@@ -305,6 +312,28 @@ static void handle_temperature_response(const uint8_t *data, uint8_t len)
     }
 }
 
+static void handle_pot_presence_response(const uint8_t *data, uint8_t len)
+{
+    if (len < 3) {
+        ESP_LOGW(TAG, "Pot presence response too short: %d", len);
+        return;
+    }
+    
+    xSemaphoreTake(status_mutex, portMAX_DELAY);
+    cached_pot_present = (data[0] != 0);
+    memcpy(&cached_pot_distance_mm, &data[1], 2);
+    xSemaphoreGive(status_mutex);
+    
+    last_response_time = esp_timer_get_time();
+    
+    ESP_LOGD(TAG, "Pot presence: %s, distance=%u mm", 
+             cached_pot_present ? "PRESENT" : "NOT PRESENT", cached_pot_distance_mm);
+    
+    if (pot_presence_callback) {
+        pot_presence_callback(cached_pot_present, cached_pot_distance_mm);
+    }
+}
+
 static void handle_response(proto_frame_t *frame)
 {
     last_response_time = esp_timer_get_time();
@@ -343,6 +372,10 @@ static void handle_response(proto_frame_t *frame)
             
         case RSP_TEMPERATURE:
             handle_temperature_response(frame->data, frame->length);
+            break;
+            
+        case RSP_POT_PRESENCE:
+            handle_pot_presence_response(frame->data, frame->length);
             break;
             
         case RSP_PONG:
@@ -557,6 +590,11 @@ void uart_comm_set_temperature_callback(uart_comm_temperature_cb_t callback)
     temperature_callback = callback;
 }
 
+void uart_comm_set_pot_presence_callback(uart_comm_pot_presence_cb_t callback)
+{
+    pot_presence_callback = callback;
+}
+
 /* ============================================
    PUBLIC FUNCTIONS - COMMANDS
    ============================================ */
@@ -661,6 +699,12 @@ bool uart_comm_get_temperature(void)
     return true;
 }
 
+bool uart_comm_get_pot_presence(void)
+{
+    send_command(CMD_GET_POT_PRESENCE, NULL, 0);
+    return true;
+}
+
 /* ============================================
    PUBLIC FUNCTIONS - STATUS
    ============================================ */
@@ -678,6 +722,14 @@ void uart_comm_get_cached_temperature(float *object_temp, float *ambient_temp)
     xSemaphoreTake(status_mutex, portMAX_DELAY);
     if (object_temp) *object_temp = cached_object_temp;
     if (ambient_temp) *ambient_temp = cached_ambient_temp;
+    xSemaphoreGive(status_mutex);
+}
+
+void uart_comm_get_cached_pot_presence(bool *is_present, uint16_t *distance_mm)
+{
+    xSemaphoreTake(status_mutex, portMAX_DELAY);
+    if (is_present) *is_present = cached_pot_present;
+    if (distance_mm) *distance_mm = cached_pot_distance_mm;
     xSemaphoreGive(status_mutex);
 }
 

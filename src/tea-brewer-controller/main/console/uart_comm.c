@@ -8,6 +8,7 @@
 #include "../protocol/protocol.h"
 #include "../motor/motor_control.h"
 #include "../temperature_sensor/thermometer.h"
+#include "../pot_sensor/pot_sensor.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
@@ -114,6 +115,20 @@ static void send_temperature(void)
     }
     
     uint8_t len = proto_build_temperature(tx_buffer, object_temp, ambient_temp);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_pot_presence(void)
+{
+    bool is_present = false;
+    uint16_t distance_mm = 0;
+    
+    if (pot_sensor_is_initialized()) {
+        pot_sensor_get_distance(&distance_mm);
+        is_present = pot_sensor_is_present();
+    }
+    
+    uint8_t len = proto_build_pot_presence(tx_buffer, is_present, distance_mm);
     uart_comm_send(tx_buffer, len);
 }
 
@@ -262,6 +277,11 @@ static void handle_command(proto_frame_t *frame)
         case CMD_GET_TEMPERATURE:
             ESP_LOGD(TAG, "GET_TEMPERATURE");
             send_temperature();
+            break;
+            
+        case CMD_GET_POT_PRESENCE:
+            ESP_LOGD(TAG, "GET_POT_PRESENCE");
+            send_pot_presence();
             break;
             
         default:

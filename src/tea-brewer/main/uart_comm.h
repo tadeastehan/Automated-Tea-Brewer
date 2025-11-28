@@ -93,6 +93,13 @@ typedef void (*uart_comm_error_cb_t)(uint8_t error_code);
  */
 typedef void (*uart_comm_temperature_cb_t)(float object_temp, float ambient_temp);
 
+/**
+ * @brief Callback for pot presence updates
+ * @param is_present true if pot is detected
+ * @param distance_mm Current distance reading in mm
+ */
+typedef void (*uart_comm_pot_presence_cb_t)(bool is_present, uint16_t distance_mm);
+
 /* ============================================
    INITIALIZATION
    ============================================ */
@@ -146,6 +153,11 @@ void uart_comm_set_error_callback(uart_comm_error_cb_t callback);
  * @brief Register callback for temperature updates
  */
 void uart_comm_set_temperature_callback(uart_comm_temperature_cb_t callback);
+
+/**
+ * @brief Register callback for pot presence updates
+ */
+void uart_comm_set_pot_presence_callback(uart_comm_pot_presence_cb_t callback);
 
 /* ============================================
    MOTOR COMMANDS (Non-blocking)
@@ -238,6 +250,12 @@ bool uart_comm_clear_calibration(void);
  */
 bool uart_comm_get_temperature(void);
 
+/**
+ * @brief Request pot presence status
+ * @return true if command sent
+ */
+bool uart_comm_get_pot_presence(void);
+
 /* ============================================
    STATUS ACCESS
    ============================================ */
@@ -254,6 +272,13 @@ void uart_comm_get_cached_status(motor_status_t *status);
  * @param ambient_temp Pointer to store ambient temperature (can be NULL)
  */
 void uart_comm_get_cached_temperature(float *object_temp, float *ambient_temp);
+
+/**
+ * @brief Get cached pot presence status
+ * @param is_present Pointer to store presence status (can be NULL)
+ * @param distance_mm Pointer to store distance in mm (can be NULL)
+ */
+void uart_comm_get_cached_pot_presence(bool *is_present, uint16_t *distance_mm);
 
 /**
  * @brief Check if motor controller is connected

@@ -8,6 +8,7 @@ idf_component_register(
         "protocol/protocol.c"
         "temperature_sensor/thermometer.c"
         "distance_sensor/distance_sensor.c"
+        "pot_sensor/pot_sensor.c"
     INCLUDE_DIRS 
         "."
         "motor"
@@ -15,4 +16,5 @@ idf_component_register(
         "protocol"
         "temperature_sensor"
         "distance_sensor"
+        "pot_sensor"
 )

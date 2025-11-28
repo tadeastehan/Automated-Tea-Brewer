@@ -45,6 +45,7 @@ typedef enum
     CMD_SAVE_CALIBRATION = 0x40,
     CMD_CLEAR_CALIBRATION = 0x41,
     CMD_GET_TEMPERATURE = 0x50,
+    CMD_GET_POT_PRESENCE = 0x51,
 
     /* Responses (Motor Controller -> Display) */
     RSP_ACK = 0x80,
@@ -54,6 +55,7 @@ typedef enum
     RSP_SGT = 0x84,
     RSP_PONG = 0x85,
     RSP_TEMPERATURE = 0x86,
+    RSP_POT_PRESENCE = 0x87,
 
     /* Async notifications (Motor Controller -> Display) */
     NOTIFY_MOVE_COMPLETE = 0xA0,
@@ -191,5 +193,14 @@ uint8_t proto_build_notify(uint8_t *buffer, uint8_t notify_type, uint8_t data);
  * @return Frame length
  */
 uint8_t proto_build_temperature(uint8_t *buffer, float object_temp, float ambient_temp);
+
+/**
+ * @brief Build pot presence response
+ * @param buffer Output buffer
+ * @param is_present true if pot is present, false otherwise
+ * @param distance_mm Current distance reading in mm
+ * @return Frame length
+ */
+uint8_t proto_build_pot_presence(uint8_t *buffer, bool is_present, uint16_t distance_mm);
 
 #endif // PROTOCOL_H
