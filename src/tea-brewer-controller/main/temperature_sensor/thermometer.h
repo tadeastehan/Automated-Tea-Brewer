@@ -57,11 +57,28 @@ esp_err_t thermometer_init(void);
 esp_err_t thermometer_deinit(void);
 
 /**
- * @brief Get the object (target) temperature
+ * @brief Get the raw object (target) temperature from IR sensor
  * 
- * Reads the temperature of the object the sensor is pointed at.
+ * Reads the raw temperature of the object the sensor is pointed at,
+ * without applying calibration.
  * 
- * @param[out] temperature Pointer to store temperature in °C
+ * @param[out] temperature Pointer to store raw temperature in °C
+ * @return
+ *      - ESP_OK on success
+ *      - ESP_ERR_INVALID_ARG if temperature is NULL
+ *      - ESP_ERR_INVALID_STATE if not initialized
+ *      - ESP_FAIL on read failure
+ */
+esp_err_t thermometer_get_object_temp_raw(float *temperature);
+
+/**
+ * @brief Get the calibrated object (target) temperature
+ * 
+ * Reads the temperature of the object the sensor is pointed at
+ * and applies the calibration equation:
+ *   real_temp = 0.000089 * IR² + 1.084436 * IR + (-1.348549)
+ * 
+ * @param[out] temperature Pointer to store calibrated temperature in °C
  * @return
  *      - ESP_OK on success
  *      - ESP_ERR_INVALID_ARG if temperature is NULL

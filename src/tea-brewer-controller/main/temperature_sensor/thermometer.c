@@ -111,7 +111,39 @@ esp_err_t thermometer_deinit(void)
     return ESP_OK;
 }
 
-esp_err_t thermometer_get_object_temp(float *temperature)
+/* ============================================
+   Calibration Constants
+   ============================================ */
+/**
+ * Calibration equation: real_temp = A * IR² + B * IR + C
+ *
+ * Coefficients origin:
+ *   - Derived from empirical testing using a calibrated reference thermometer
+ *     and MLX90614 sensor readings in a controlled environment.
+ * Units:
+ *   - raw_temp: degrees Celsius (°C)
+ *   - Output: degrees Celsius (°C)
+ * Valid temperature range:
+ *   - Calibration is valid for raw_temp values between 0°C and 100°C.
+ *     Outside this range, accuracy is not guaranteed.
+ */
+#define CALIB_COEFF_A  0.000089f
+#define CALIB_COEFF_B  1.084436f
+#define CALIB_COEFF_C  (-1.348549f)
+
+/**
+ * @brief Apply calibration to raw IR temperature
+ * @param raw_temp Raw temperature from IR sensor
+ * @return Calibrated temperature
+ */
+static float apply_temp_calibration(float raw_temp)
+{
+    return (CALIB_COEFF_A * raw_temp * raw_temp) + 
+           (CALIB_COEFF_B * raw_temp) + 
+           CALIB_COEFF_C;
+}
+
+esp_err_t thermometer_get_object_temp_raw(float *temperature)
 {
     if (temperature == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -123,6 +155,28 @@ esp_err_t thermometer_get_object_temp(float *temperature)
     }
 
     return mlx90614_get_to(s_mlx90614_handle, temperature);
+}
+
+esp_err_t thermometer_get_object_temp(float *temperature)
+{
+    if (temperature == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!s_initialized) {
+        ESP_LOGE(TAG, "Not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    float raw_temp;
+    esp_err_t ret = mlx90614_get_to(s_mlx90614_handle, &raw_temp);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    /* Apply calibration equation */
+    *temperature = apply_temp_calibration(raw_temp);
+    return ESP_OK;
 }
 
 esp_err_t thermometer_get_ambient_temp(float *temperature)
@@ -151,11 +205,14 @@ esp_err_t thermometer_get_temperatures(thermometer_readings_t *readings)
     }
 
     esp_err_t ret;
+    float raw_object_temp;
 
-    ret = mlx90614_get_to(s_mlx90614_handle, &readings->object_temp);
+    ret = mlx90614_get_to(s_mlx90614_handle, &raw_object_temp);
     if (ret != ESP_OK) {
         return ret;
     }
+    /* Apply calibration to object temperature */
+    readings->object_temp = apply_temp_calibration(raw_object_temp);
 
     ret = mlx90614_get_ta(s_mlx90614_handle, &readings->ambient_temp);
     if (ret != ESP_OK) {
