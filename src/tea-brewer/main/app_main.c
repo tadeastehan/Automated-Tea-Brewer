@@ -28,6 +28,7 @@
 
 #include "uart_comm.h"
 #include "ui/ui.h"
+#include "ui/ui_events.h"
 
 static const char *TAG = "main";
 
@@ -296,6 +297,8 @@ void app_main(void)
 
     /* Initialize motor communication with ESP #2 (Motor Controller) */
     motor_comm_init();
+    
+    /* Motor initialization will happen automatically when first ping is received */
 
 #if MEMORY_MONITOR
     sys_monitor_start();

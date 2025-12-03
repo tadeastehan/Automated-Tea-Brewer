@@ -148,6 +148,9 @@ static void send_pot_presence(void)
    ============================================ */
 static bool induction_initialized = false;
 
+// Button press pulse duration in milliseconds
+#define INDUCTION_BUTTON_PULSE_MS  500
+
 static void induction_init(void)
 {
     if (!induction_initialized) {
@@ -159,26 +162,35 @@ static void induction_init(void)
             .intr_type = GPIO_INTR_DISABLE,
         };
         gpio_config(&io_conf);
-        gpio_set_level(PIN_INDUCTION, 0);  // Start with induction OFF
+        gpio_set_level(PIN_INDUCTION, 0);  // Start with button released
         induction_initialized = true;
         ESP_LOGI(TAG, "Induction cooker GPIO initialized (pin %d)", PIN_INDUCTION);
     }
 }
 
-static void induction_on(void)
+// Emulate a button press: pulse HIGH for 500ms then return to LOW
+static void induction_button_press(void)
 {
     induction_init();
-    gpio_set_level(PIN_INDUCTION, 1);
+    ESP_LOGI(TAG, "Induction button press - pulsing GPIO");
+    gpio_set_level(PIN_INDUCTION, 1);      // Press button (HIGH)
+    vTaskDelay(pdMS_TO_TICKS(INDUCTION_BUTTON_PULSE_MS));  // Hold for 500ms
+    gpio_set_level(PIN_INDUCTION, 0);      // Release button (LOW)
+    ESP_LOGI(TAG, "Induction button press complete");
+}
+
+static void induction_on(void)
+{
+    ESP_LOGI(TAG, "Induction cooker ON - sending button press");
+    induction_button_press();
     induction_is_on = true;
-    ESP_LOGI(TAG, "Induction cooker ON");
 }
 
 static void induction_off(void)
 {
-    induction_init();
-    gpio_set_level(PIN_INDUCTION, 0);
+    ESP_LOGI(TAG, "Induction cooker OFF - sending button press");
+    induction_button_press();
     induction_is_on = false;
-    ESP_LOGI(TAG, "Induction cooker OFF");
 }
 
 /* ============================================

@@ -16,6 +16,9 @@ extern uint8_t current_tea_index;
 // Initialize UI events - creates NVS save task
 void ui_events_init(void);
 
+// Startup motor initialization - home and move to drying position
+void ui_startup_motor_init(void);
+
 void onMainScreen(lv_event_t * e);
 void nextTeaScreen(lv_event_t * e);
 void onTeaScreen(lv_event_t * e);

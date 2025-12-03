@@ -36,6 +36,6 @@
 /* ============================================
    INDUCTION COOKER CONTROL PIN
    ============================================ */
-#define PIN_INDUCTION       15  // HIGH = ON, LOW = OFF
+#define PIN_INDUCTION       4  // HIGH = ON, LOW = OFF
 
 #endif // PINS_H

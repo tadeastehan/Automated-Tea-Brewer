@@ -203,10 +203,17 @@ void ui_on_home_complete(bool success)
     }
 }
 
+// Track if we've done startup motor init
+static bool startup_motor_init_done = false;
+
 void ui_on_motor_status_update(const motor_status_t *status)
 {
-    // Can update UI elements here if needed
-    // Note: This runs in UART task context - use lvgl_port_lock/unlock
+    // Trigger startup motor initialization on first connection
+    if (status->is_connected && !startup_motor_init_done) {
+        startup_motor_init_done = true;
+        ESP_LOGI(TAG_UI, "Motor controller connected - triggering startup motor init");
+        ui_startup_motor_init();
+    }
 }
 
 ///////////////////// SCREENS ////////////////////
