@@ -84,6 +84,9 @@ static uart_comm_error_cb_t error_callback = NULL;
 static uart_comm_temperature_cb_t temperature_callback = NULL;
 static uart_comm_pot_presence_cb_t pot_presence_callback = NULL;
 
+/* Startup state */
+static bool startup_sequence_done = false;
+
 /* Cached temperature */
 static float cached_object_temp = 0.0f;
 static float cached_ambient_temp = 0.0f;
@@ -262,6 +265,15 @@ static void handle_status_response(const uint8_t *data, uint8_t len)
     
     if (status_callback) {
         status_callback(&cached_status);
+    }
+    
+    /* Startup sequence: auto-home if calibrated but not homed */
+    if (!startup_sequence_done && cached_status.is_calibrated && !cached_status.is_homed) {
+        startup_sequence_done = true;
+        ESP_LOGI(TAG, "Starting automatic homing sequence...");
+        /* Home command will be sent, and then idle position move triggered in home_complete callback */
+        vTaskDelay(pdMS_TO_TICKS(100));
+        uart_comm_home();
     }
 }
 

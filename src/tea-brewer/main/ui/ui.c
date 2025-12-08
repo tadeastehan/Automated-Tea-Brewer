@@ -164,7 +164,7 @@ void update_tea_background(void)
 }
 
 ///////////////////// MOTOR CONTROL FUNCTIONS ////////////////////
-void ui_motor_move_to_drying_position(int32_t position)
+void ui_motor_move_to_position(int32_t position)
 {
     motor_status_t status;
     uart_comm_get_cached_status(&status);
@@ -185,7 +185,7 @@ void ui_motor_move_to_drying_position(int32_t position)
         motor_pending_position = position;
         uart_comm_home();
     } else {
-        ESP_LOGI(TAG_UI, "Moving to drying position: %ld%%", (long)position);
+        ESP_LOGI(TAG_UI, "Moving to position: %ld%%", (long)position);
         uart_comm_move_to_percent((float)position);
     }
 }

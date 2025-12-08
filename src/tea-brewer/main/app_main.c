@@ -32,6 +32,10 @@
 
 static const char *TAG = "main";
 
+/* Startup sequence state */
+static bool startup_homing_triggered = false;
+static bool startup_sequence_complete = false;
+
 //NOTE: We currently have two versions of the 2.1 knob screen. If you have purchased the touch version, please set the macro definition below to 1
 
 #define MEMORY_MONITOR 0
@@ -182,6 +186,14 @@ static void on_motor_status_update(const motor_status_t *status)
     
     /* Notify UI about status update */
     ui_on_motor_status_update(status);
+    
+    /* Startup sequence: trigger homing when ESP #2 first connects */
+    if (!startup_homing_triggered && status->is_connected && status->is_calibrated) {
+        startup_homing_triggered = true;
+        ESP_LOGI(TAG, "ESP #2 connected - triggering homing sequence...");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        uart_comm_home();
+    }
 }
 
 /**
@@ -203,6 +215,15 @@ static void on_motor_home_complete(bool success)
 {
     if (success) {
         ESP_LOGI(TAG, "Motor homing completed");
+        
+        /* After startup homing, move to idle position */
+        if (!startup_sequence_complete) {
+            startup_sequence_complete = true;
+            int idle_pos = settings_get_idle_position();
+            ESP_LOGI(TAG, "Moving to idle position after homing: %d%%", idle_pos);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            uart_comm_move_to_percent((float)idle_pos);
+        }
     } else {
         ESP_LOGW(TAG, "Motor homing failed");
     }

@@ -26,8 +26,7 @@ typedef struct {
     uint8_t magic;
     bool need_hint;
     uint8_t language;
-    uint8_t drying_time;     // Drying time in minutes (0-59)
-    int drying_position;      // Drying position counter
+    int idle_position;        // Idle position percentage (0-100)
     tea_params_t tea_params[MAX_TEA_TYPES];  // Tea-specific parameters
 } sys_param_t;
 
@@ -35,13 +34,11 @@ esp_err_t settings_read_parameter_from_nvs(void);
 esp_err_t settings_write_parameter_to_nvs(void);
 sys_param_t *settings_get_parameter(void);
 
-// Drying time and position functions
-void settings_set_drying_time(uint8_t time);
-uint8_t settings_get_drying_time(void);
-void settings_set_drying_position(int position);
-int settings_get_drying_position(void);
-void settings_set_drying_position_no_save(int position);  // Set position without saving to NVS
-void settings_flush_drying_position(void);  // Force write drying position to NVS
+// Idle position functions
+void settings_set_idle_position(int position);
+int settings_get_idle_position(void);
+void settings_set_idle_position_no_save(int position);  // Set position without saving to NVS
+void settings_flush_idle_position(void);  // Force write idle position to NVS
 
 // Tea parameters functions
 void settings_set_tea_temperature(uint8_t tea_index, uint8_t temperature);

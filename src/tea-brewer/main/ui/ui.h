@@ -87,7 +87,7 @@ void update_tea_color(void);
 void update_tea_background(void);
 
 // Motor control helpers
-void ui_motor_move_to_drying_position(int32_t position);
+void ui_motor_move_to_position(int32_t position);
 
 // Motor callbacks (called from app_main.c)
 void ui_on_home_complete(bool success);

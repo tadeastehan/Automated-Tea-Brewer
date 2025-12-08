@@ -33,6 +33,8 @@
 
 static const char *TAG = "MAIN";
 
+#define DEBUG 0  // Set to 1 to enable distance sensor debug output
+
 /**
  * @brief Initialize NVS flash storage
  */
@@ -160,11 +162,15 @@ void app_main(void)
        ======================================== */
     console_printf("Loading calibration...\r\n");
     ret = motor_load_calibration();
-    if (ret == ESP_OK) {
+    bool calibration_loaded = (ret == ESP_OK);
+    if (calibration_loaded) {
         console_printf("Calibration: LOADED\r\n");
     } else {
         console_printf("Calibration: NOT FOUND\r\n");
     }
+    
+    /* NOTE: No automatic homing on startup
+     * ESP #2 waits in IDLE state for ESP #1 to send HOME command */
     
     /* ========================================
        STEP 5: Initialize Temperature Sensor
@@ -234,11 +240,13 @@ void app_main(void)
     /* Start UART task (ESP-to-ESP binary protocol) */
     uart_comm_start_task();
     
-    /* Start distance sensor reading task */
+    /* Start distance sensor reading task (only if DEBUG enabled) */
+#if DEBUG
     if (pot_sensor_is_initialized()) {
         xTaskCreate(distance_task, "distance_task", 2048, NULL, 5, NULL);
         ESP_LOGI(TAG, "Pot sensor task started (250ms interval)");
     }
+#endif
     
     ESP_LOGI(TAG, "System ready!");
     

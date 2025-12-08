@@ -26,8 +26,7 @@ static const sys_param_t g_default_sys_param = {
     .magic = MAGIC_HEAD,
     .need_hint = 1,
     .language = LANGUAGE_EN,
-    .drying_time = 10,       // Default 10 minutes
-    .drying_position = 0,    // Default position 0
+    .idle_position = 0,      // Default idle position 0%
     .tea_params = {
         {.temperature = 80, .infusion_time = 120},   // Tea 0: Green Tea - 2 min, 80°C
         {.temperature = 100, .infusion_time = 240},  // Tea 1: Black Tea - 4 min, 100°C
@@ -98,36 +97,23 @@ sys_param_t *settings_get_parameter(void)
     return &g_sys_param;
 }
 
-void settings_set_drying_time(uint8_t time)
+void settings_set_idle_position(int position)
 {
-    if (time <= 59) {  // Validate range (0-59 minutes)
-        g_sys_param.drying_time = time;
-        settings_write_parameter_to_nvs();
-    }
-}
-
-uint8_t settings_get_drying_time(void)
-{
-    return g_sys_param.drying_time;
-}
-
-void settings_set_drying_position(int position)
-{
-    g_sys_param.drying_position = position;
+    g_sys_param.idle_position = position;
     settings_write_parameter_to_nvs();
 }
 
-int settings_get_drying_position(void)
+int settings_get_idle_position(void)
 {
-    return g_sys_param.drying_position;
+    return g_sys_param.idle_position;
 }
 
-void settings_set_drying_position_no_save(int position)
+void settings_set_idle_position_no_save(int position)
 {
-    g_sys_param.drying_position = position;
+    g_sys_param.idle_position = position;
 }
 
-void settings_flush_drying_position(void)
+void settings_flush_idle_position(void)
 {
     settings_write_parameter_to_nvs();
 }

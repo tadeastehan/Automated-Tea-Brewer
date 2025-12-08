@@ -4,17 +4,19 @@
 // Project name: SquareLine_Project
 
 #include "../ui.h"
+#include "../ui_events.h"
 
 lv_obj_t * ui_SettingsScreen = NULL;
 lv_obj_t * ui_Label13 = NULL;
-lv_obj_t * ui_Label14 = NULL;
-lv_obj_t * ui_Roller5 = NULL;
-lv_obj_t * ui_Label16 = NULL;
 lv_obj_t * ui_Label15 = NULL;
 lv_obj_t * ui_Button2 = NULL;
 lv_obj_t * ui_Label17 = NULL;
 lv_obj_t * ui_Button1 = NULL;
 lv_obj_t * ui_Label18 = NULL;
+#if DEBUG_ENABLED
+lv_obj_t * ui_DebugButton = NULL;
+lv_obj_t * ui_DebugLabel = NULL;
+#endif
 // event funtions
 void ui_event_SettingsScreen(lv_event_t * e)
 {
@@ -28,22 +30,12 @@ void ui_event_SettingsScreen(lv_event_t * e)
     }
 }
 
-void ui_event_Roller5(lv_event_t * e)
-{
-    lv_event_code_t event_code = lv_event_get_code(e);
-
-    if(event_code == LV_EVENT_VALUE_CHANGED) {
-        changeDryingTime(e);
-    }
-}
-
 void ui_event_Button2(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
 
     if(event_code == LV_EVENT_CLICKED) {
-        dryingPositionUp(e);
-        (e);
+        idlePositionUp(e);
     }
 }
 
@@ -52,9 +44,20 @@ void ui_event_Button1(lv_event_t * e)
     lv_event_code_t event_code = lv_event_get_code(e);
 
     if(event_code == LV_EVENT_CLICKED) {
-        dryingPositionDown(e);
+        idlePositionDown(e);
     }
 }
+
+#if DEBUG_ENABLED
+void ui_event_DebugButton(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_CLICKED) {
+        startTeabagDropoff(e);
+    }
+}
+#endif
 
 // build funtions
 
@@ -76,56 +79,20 @@ void ui_SettingsScreen_screen_init(void)
     lv_label_set_text(ui_Label13, "Settings");
     lv_obj_set_style_text_font(ui_Label13, &lv_font_montserrat_36, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_Label14 = lv_label_create(ui_SettingsScreen);
-    lv_obj_set_width(ui_Label14, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_Label14, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_Label14, -80);
-    lv_obj_set_y(ui_Label14, -80);
-    lv_obj_set_align(ui_Label14, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_Label14, "Drying Time");
-    lv_obj_set_style_text_font(ui_Label14, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    ui_Roller5 = lv_roller_create(ui_SettingsScreen);
-    lv_roller_set_options(ui_Roller5,
-                          "00\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n31\n32\n33\n34\n35\n36\n37\n38\n39\n40\n41\n42\n43\n44\n45\n46\n47\n48\n49\n50\n51\n52\n53\n54\n55\n56\n57\n58\n59",
-                          LV_ROLLER_MODE_INFINITE);
-    lv_roller_set_selected(ui_Roller5, 10, LV_ANIM_OFF);
-    lv_obj_set_height(ui_Roller5, 75);
-    lv_obj_set_width(ui_Roller5, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_x(ui_Roller5, -85);
-    lv_obj_set_y(ui_Roller5, -80);
-    lv_obj_set_align(ui_Roller5, LV_ALIGN_RIGHT_MID);
-
-    ui_object_set_themeable_style_property(ui_Roller5, LV_PART_SELECTED | LV_STATE_DEFAULT, LV_STYLE_BG_COLOR,
-                                           _ui_theme_color_teacolor);
-    ui_object_set_themeable_style_property(ui_Roller5, LV_PART_SELECTED | LV_STATE_DEFAULT, LV_STYLE_BG_OPA,
-                                           _ui_theme_alpha_teacolor);
-
-    ui_Label16 = lv_label_create(ui_SettingsScreen);
-    lv_obj_set_width(ui_Label16, LV_SIZE_CONTENT);   /// 1
-    lv_obj_set_height(ui_Label16, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_Label16, 182);
-    lv_obj_set_y(ui_Label16, -80);
-    lv_obj_set_align(ui_Label16, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_Label16, "m");
-    lv_obj_remove_flag(ui_Label16, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM |
-                       LV_OBJ_FLAG_SCROLL_CHAIN);     /// Flags
-    lv_obj_set_style_text_font(ui_Label16, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
-
     ui_Label15 = lv_label_create(ui_SettingsScreen);
     lv_obj_set_width(ui_Label15, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_Label15, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_x(ui_Label15, -80);
-    lv_obj_set_y(ui_Label15, 20);
+    lv_obj_set_y(ui_Label15, -30);
     lv_obj_set_align(ui_Label15, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_Label15, "Drying Position");
+    lv_label_set_text(ui_Label15, "Idle Position");
     lv_obj_set_style_text_font(ui_Label15, &lv_font_montserrat_38, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_Button2 = lv_button_create(ui_SettingsScreen);
     lv_obj_set_width(ui_Button2, 50);
     lv_obj_set_height(ui_Button2, 50);
     lv_obj_set_x(ui_Button2, 115);
-    lv_obj_set_y(ui_Button2, 20);
+    lv_obj_set_y(ui_Button2, -30);
     lv_obj_set_align(ui_Button2, LV_ALIGN_CENTER);
     lv_obj_remove_flag(ui_Button2, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM |
                        LV_OBJ_FLAG_SCROLL_CHAIN);     /// Flags
@@ -138,7 +105,7 @@ void ui_SettingsScreen_screen_init(void)
     lv_obj_set_width(ui_Label17, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_Label17, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_x(ui_Label17, 115);
-    lv_obj_set_y(ui_Label17, 20);
+    lv_obj_set_y(ui_Label17, -30);
     lv_obj_set_align(ui_Label17, LV_ALIGN_CENTER);
     lv_label_set_text(ui_Label17, "+");
     lv_obj_remove_flag(ui_Label17, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM |
@@ -149,7 +116,7 @@ void ui_SettingsScreen_screen_init(void)
     lv_obj_set_width(ui_Button1, 50);
     lv_obj_set_height(ui_Button1, 50);
     lv_obj_set_x(ui_Button1, 185);
-    lv_obj_set_y(ui_Button1, 20);
+    lv_obj_set_y(ui_Button1, -30);
     lv_obj_set_align(ui_Button1, LV_ALIGN_CENTER);
     lv_obj_remove_flag(ui_Button1, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM |
                        LV_OBJ_FLAG_SCROLL_CHAIN);     /// Flags
@@ -162,7 +129,7 @@ void ui_SettingsScreen_screen_init(void)
     lv_obj_set_width(ui_Label18, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_Label18, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_x(ui_Label18, 185);
-    lv_obj_set_y(ui_Label18, 18);
+    lv_obj_set_y(ui_Label18, -32);
     lv_obj_set_align(ui_Label18, LV_ALIGN_CENTER);
     lv_label_set_text(ui_Label18, "-");
     lv_obj_remove_flag(ui_Label18, LV_OBJ_FLAG_PRESS_LOCK | LV_OBJ_FLAG_CLICK_FOCUSABLE | LV_OBJ_FLAG_GESTURE_BUBBLE |
@@ -170,7 +137,28 @@ void ui_SettingsScreen_screen_init(void)
                        LV_OBJ_FLAG_SCROLL_CHAIN);     /// Flags
     lv_obj_set_style_text_font(ui_Label18, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    lv_obj_add_event_cb(ui_Roller5, ui_event_Roller5, LV_EVENT_ALL, NULL);
+#if DEBUG_ENABLED
+    // Debug button for teabag dropoff test
+    ui_DebugButton = lv_button_create(ui_SettingsScreen);
+    lv_obj_set_width(ui_DebugButton, 200);
+    lv_obj_set_height(ui_DebugButton, 50);
+    lv_obj_set_x(ui_DebugButton, 0);
+    lv_obj_set_y(ui_DebugButton, 60);
+    lv_obj_set_align(ui_DebugButton, LV_ALIGN_CENTER);
+    lv_obj_remove_flag(ui_DebugButton, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(ui_DebugButton, lv_color_hex(0xFF6600), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_DebugButton, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_DebugLabel = lv_label_create(ui_DebugButton);
+    lv_obj_set_width(ui_DebugLabel, LV_SIZE_CONTENT);
+    lv_obj_set_height(ui_DebugLabel, LV_SIZE_CONTENT);
+    lv_obj_set_align(ui_DebugLabel, LV_ALIGN_CENTER);
+    lv_label_set_text(ui_DebugLabel, "Teabag Dropoff");
+    lv_obj_set_style_text_font(ui_DebugLabel, &lv_font_montserrat_20, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_add_event_cb(ui_DebugButton, ui_event_DebugButton, LV_EVENT_ALL, NULL);
+#endif
+
     lv_obj_add_event_cb(ui_Button2, ui_event_Button2, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_Button1, ui_event_Button1, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_SettingsScreen, ui_event_SettingsScreen, LV_EVENT_ALL, NULL);
@@ -184,13 +172,14 @@ void ui_SettingsScreen_screen_destroy(void)
     // NULL screen variables
     ui_SettingsScreen = NULL;
     ui_Label13 = NULL;
-    ui_Label14 = NULL;
-    ui_Roller5 = NULL;
-    ui_Label16 = NULL;
     ui_Label15 = NULL;
     ui_Button2 = NULL;
     ui_Label17 = NULL;
     ui_Button1 = NULL;
     ui_Label18 = NULL;
+#if DEBUG_ENABLED
+    ui_DebugButton = NULL;
+    ui_DebugLabel = NULL;
+#endif
 
 }

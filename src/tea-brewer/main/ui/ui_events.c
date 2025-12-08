@@ -4,6 +4,7 @@
 // Project name: SquareLine_Project
 
 #include "ui.h"
+#include "ui_events.h"
 #include "../settings.h"
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -39,7 +40,7 @@ static volatile bool position_save_pending = false;
 static volatile bool tea_params_save_pending = false;
 
 // Timer handles
-static TimerHandle_t drying_position_save_timer = NULL;
+static TimerHandle_t idle_position_save_timer = NULL;
 static TimerHandle_t tea_params_save_timer = NULL;
 static TimerHandle_t temperature_request_timer = NULL;
 static TimerHandle_t pot_check_timer = NULL;
@@ -47,8 +48,7 @@ static TimerHandle_t pot_timeout_timer = NULL;
 static TimerHandle_t brewing_pot_check_timer = NULL;    // Check pot every 5s during brewing/infusing
 static TimerHandle_t brewing_timeout_timer = NULL;      // 20 minute max brewing time
 static TimerHandle_t infusion_timer = NULL;             // 1 second timer for infusion countdown
-static TimerHandle_t drying_timer = NULL;               // 1 second timer for drying countdown
-static TimerHandle_t final_drop_timer = NULL;           // 5 second wait timer for final drop
+static TimerHandle_t teabag_dropoff_timer = NULL;       // Timer for teabag shake sequence
 
 /* ============================================
    BREWING STATE MACHINE
@@ -57,8 +57,7 @@ typedef enum {
     BREW_STATE_IDLE = 0,
     BREW_STATE_BREWING,
     BREW_STATE_INFUSING,
-    BREW_STATE_DRYING,          // Tea bag drying after infusion
-    BREW_STATE_FINAL_DROP,      // Final drop to 100% and back
+    BREW_STATE_TEABAG_DROPOFF,  // Teabag shake/drop sequence after infusion
     BREW_STATE_SCHEDULED
 } brew_state_t;
 
@@ -81,12 +80,12 @@ static float last_temp_reading = 0.0f;   // Last temperature reading for progres
 static uint16_t infusion_target_seconds = 0;  // Target infusion time in seconds
 static uint16_t infusion_elapsed_seconds = 0; // Elapsed infusion time in seconds
 
-// Drying state
-static uint16_t drying_target_seconds = 0;    // Target drying time in seconds
-static uint16_t drying_elapsed_seconds = 0;   // Elapsed drying time in seconds
+// Teabag dropoff state
+static uint8_t teabag_shake_count = 0;    // Counter for shake sequence
+static bool teabag_shake_going_down = false;  // Direction of shake movement
 
 // Startup motor initialization state
-static bool startup_motor_init_pending = true;  // Need to home and move to drying position on startup
+static bool startup_motor_init_pending = true;  // Need to home and move to idle position on startup
 
 // NVS save task handle
 static TaskHandle_t nvs_save_task_handle = NULL;
@@ -106,19 +105,20 @@ static void stop_pot_detection(void);
 static void brewing_pot_check_callback(TimerHandle_t xTimer);
 static void brewing_timeout_callback(TimerHandle_t xTimer);
 static void infusion_timer_callback(TimerHandle_t xTimer);
-static void drying_timer_callback(TimerHandle_t xTimer);
-static void final_drop_timer_callback(TimerHandle_t xTimer);
+static void teabag_dropoff_timer_callback(TimerHandle_t xTimer);
 static void on_brewing_pot_presence(bool is_present, uint16_t distance_mm);
 static void start_brewing_state(void);
 static void start_infusing_state(void);
-static void start_drying_state(void);
-static void start_final_drop_state(void);
+static void start_teabag_dropoff(void);
 static void stop_brew_process(const char *error_message);
 static void finish_infusion(void);
 static void finish_brew_cycle(void);
 
 /* Motor move complete callback for brewing sequence */
 static void on_brewing_move_complete(bool success);
+
+/* Timer callback for NVS save */
+static void idle_position_save_timer_callback(TimerHandle_t xTimer);
 
 /* ============================================
    NVS SAVE TASK
@@ -138,9 +138,9 @@ static void nvs_save_task(void *pvParameters)
         
         // Save pending changes
         if (position_save_pending) {
-            settings_flush_drying_position();
+            settings_flush_idle_position();
             position_save_pending = false;
-            ESP_LOGI(TAG, "Drying position saved to NVS");
+            ESP_LOGI(TAG, "Idle position saved to NVS");
         }
         
         if (tea_params_save_pending) {
@@ -194,30 +194,30 @@ void ui_events_init(void)
     }
 }
 
-// Startup motor initialization - home and move to drying position
+// Startup motor initialization - home and move to idle position
 void ui_startup_motor_init(void)
 {
     if (!startup_motor_init_pending) {
         return;  // Already initialized
     }
     
-    ESP_LOGI(TAG, "Starting motor initialization - homing and moving to drying position");
+    ESP_LOGI(TAG, "Starting motor initialization - homing and moving to idle position");
     startup_motor_init_pending = false;
     
-    // Get stored drying position
-    int drying_pos = settings_get_drying_position();
-    ESP_LOGI(TAG, "Target drying position: %d%%", drying_pos);
+    // Get stored idle position
+    int idle_pos = settings_get_idle_position();
+    ESP_LOGI(TAG, "Target idle position: %d%%", idle_pos);
     
-    // Use the ui_motor_move_to_drying_position function which handles homing if needed
-    ui_motor_move_to_drying_position(drying_pos);
+    // Use the ui_motor_move_to_position function which handles homing if needed
+    ui_motor_move_to_position(idle_pos);
 }
 
 /* ============================================
    TIMER CALLBACKS
    ============================================ */
 
-// Timer callback - notify the NVS save task
-static void drying_position_save_timer_callback(TimerHandle_t xTimer)
+// Timer callback - notify the NVS save task for idle position
+static void idle_position_save_timer_callback(TimerHandle_t xTimer)
 {
     position_save_pending = true;
     if (nvs_save_task_handle != NULL) {
@@ -413,11 +413,11 @@ static void start_brewing_state(void)
     
     ESP_LOGI(TAG, "Starting brew - target temp: %d °C", brewing_target_temp);
     
-    // Move motor to drying position (tea bag in water)
-    int drying_pos = settings_get_drying_position();
-    ESP_LOGI(TAG, "Moving to drying position: %d%%", drying_pos);
+    // Move motor to idle position (tea bag in water)
+    int idle_pos = settings_get_idle_position();
+    ESP_LOGI(TAG, "Moving to idle position: %d%%", idle_pos);
     uart_comm_set_move_complete_callback(on_brewing_move_complete);
-    uart_comm_move_to_percent((float)drying_pos);
+    uart_comm_move_to_percent((float)idle_pos);
     
     // Turn on induction cooker
     uart_comm_induction_on();
@@ -579,10 +579,10 @@ static void stop_brew_process(const char *error_message)
     }
 }
 
-// Finish infusion - go to main screen and start background drying process
+// Finish infusion - go to main screen and start teabag dropoff process
 static void finish_infusion(void)
 {
-    ESP_LOGI(TAG, "Infusion complete - going to main screen and starting background drying");
+    ESP_LOGI(TAG, "Infusion complete - going to main screen and starting teabag dropoff");
     
     // Stop infusion timer
     if (infusion_timer != NULL) {
@@ -609,86 +609,41 @@ static void finish_infusion(void)
         lvgl_port_unlock();
     }
     
-    // Start background drying state
-    start_drying_state();
+    // Start teabag dropoff sequence
+    start_teabag_dropoff();
 }
 
-// Start the drying state - tea bag lifted to drying position (background process, no UI)
-static void start_drying_state(void)
+// Start the teabag dropoff state - move to 100%, shake, then to idle position
+static void start_teabag_dropoff(void)
 {
-    current_brew_state = BREW_STATE_DRYING;
+    current_brew_state = BREW_STATE_TEABAG_DROPOFF;
+    teabag_shake_count = 0;
+    teabag_shake_going_down = true;  // First move will be down to 95%
     
-    // Get drying time from settings (stored as minutes)
-    uint8_t drying_time_minutes = settings_get_drying_time();
-    drying_target_seconds = drying_time_minutes * 60;  // Convert to seconds
-    drying_elapsed_seconds = 0;
+    ESP_LOGI(TAG, "Starting teabag dropoff - moving to 100%% position");
     
-    ESP_LOGI(TAG, "Starting background drying - target time: %d minutes (%d seconds)", 
-             drying_time_minutes, drying_target_seconds);
-    
-    // Move motor to drying position (stored position)
-    int drying_pos = settings_get_drying_position();
-    ESP_LOGI(TAG, "Moving to drying position: %d%%", drying_pos);
-    uart_comm_move_to_percent((float)drying_pos);
-    
-    // Create drying timer (1 second interval)
-    if (drying_timer == NULL) {
-        drying_timer = xTimerCreate(
-            "drying",
-            pdMS_TO_TICKS(1000),
-            pdTRUE,  // Auto-reload
-            NULL,
-            drying_timer_callback
-        );
-    }
-    
-    // Start drying timer
-    if (drying_timer != NULL) {
-        xTimerStart(drying_timer, 0);
-    }
-}
-
-// Drying timer callback - check completion (no UI updates, background process)
-static void drying_timer_callback(TimerHandle_t xTimer)
-{
-    drying_elapsed_seconds++;
-    
-    // Log progress every 30 seconds
-    if (drying_elapsed_seconds % 30 == 0) {
-        ESP_LOGI(TAG, "Drying progress: %d/%d seconds", drying_elapsed_seconds, drying_target_seconds);
-    }
-    
-    // Check if drying is complete
-    if (drying_elapsed_seconds >= drying_target_seconds) {
-        ESP_LOGI(TAG, "Drying complete - starting final drop");
-        xTimerStop(drying_timer, 0);
-        start_final_drop_state();
-    }
-}
-
-// Start final drop state - drop to 100%, wait 5s, return to drying position (background, no UI)
-static void start_final_drop_state(void)
-{
-    current_brew_state = BREW_STATE_FINAL_DROP;
-    
-    ESP_LOGI(TAG, "Starting final drop - moving to 100%% position");
-    
-    // Move motor to 100% position (fully lowered for final drops)
+    // Move motor to 100% position (fully lowered)
     uart_comm_set_move_complete_callback(on_brewing_move_complete);
     uart_comm_move_to_percent(100.0f);
 }
 
-// Final drop timer callback - 5 seconds at 100%, then back to drying position
-static void final_drop_timer_callback(TimerHandle_t xTimer)
+// Teabag dropoff timer callback - for delay between shakes
+static void teabag_dropoff_timer_callback(TimerHandle_t xTimer)
 {
-    ESP_LOGI(TAG, "Final drop wait complete - returning to drying position");
-    xTimerStop(final_drop_timer, 0);
+    if (current_brew_state != BREW_STATE_TEABAG_DROPOFF) {
+        return;
+    }
     
-    // Move back to drying position
-    int drying_pos = settings_get_drying_position();
-    ESP_LOGI(TAG, "Moving to drying position: %d%%", drying_pos);
-    uart_comm_set_move_complete_callback(on_brewing_move_complete);
-    uart_comm_move_to_percent((float)drying_pos);
+    // Continue shake sequence based on current state
+    if (teabag_shake_going_down) {
+        // Move to 95% (shake down)
+        ESP_LOGI(TAG, "Shake %d: moving to 95%%", teabag_shake_count + 1);
+        uart_comm_move_to_percent(95.0f);
+    } else {
+        // Move back to 100% (shake up)
+        ESP_LOGI(TAG, "Shake %d: moving back to 100%%", teabag_shake_count + 1);
+        uart_comm_move_to_percent(100.0f);
+    }
 }
 
 // Motor move complete callback for brewing sequence
@@ -699,31 +654,64 @@ static void on_brewing_move_complete(bool success)
         return;
     }
     
-    if (current_brew_state == BREW_STATE_FINAL_DROP) {
-        // Check current motor position to determine next action
+    if (current_brew_state == BREW_STATE_TEABAG_DROPOFF) {
         motor_status_t status;
         uart_comm_get_cached_status(&status);
         
-        // If we just reached 100%, start 5 second wait timer
-        if (status.position_percent >= 99.0f) {
-            ESP_LOGI(TAG, "Reached 100%% position - waiting 5 seconds");
+        // Check where we are now
+        bool at_100 = (status.position_percent >= 99.0f);
+        bool at_95 = (status.position_percent >= 94.0f && status.position_percent <= 96.0f);
+        
+        if (teabag_shake_count == 0 && at_100 && teabag_shake_going_down) {
+            // Just arrived at 100% for first time, start shaking sequence
+            ESP_LOGI(TAG, "Reached 100%% - starting shake sequence");
             
-            // Create final drop timer (5 second one-shot)
-            if (final_drop_timer == NULL) {
-                final_drop_timer = xTimerCreate(
-                    "final_drop",
-                    pdMS_TO_TICKS(5000),
+            // Create timer if needed
+            if (teabag_dropoff_timer == NULL) {
+                teabag_dropoff_timer = xTimerCreate(
+                    "teabag_dropoff",
+                    pdMS_TO_TICKS(200),
                     pdFALSE,  // One-shot
                     NULL,
-                    final_drop_timer_callback
+                    teabag_dropoff_timer_callback
                 );
             }
             
-            if (final_drop_timer != NULL) {
-                xTimerStart(final_drop_timer, 0);
+            // Start first shake after short delay
+            if (teabag_dropoff_timer != NULL) {
+                xTimerChangePeriod(teabag_dropoff_timer, pdMS_TO_TICKS(200), 0);
+                xTimerStart(teabag_dropoff_timer, 0);
+            }
+        } else if (at_95) {
+            // Completed shake down, now go back up
+            teabag_shake_going_down = false;
+            
+            if (teabag_dropoff_timer != NULL) {
+                xTimerChangePeriod(teabag_dropoff_timer, pdMS_TO_TICKS(100), 0);
+                xTimerStart(teabag_dropoff_timer, 0);
+            }
+        } else if (at_100 && !teabag_shake_going_down) {
+            // Completed shake up - one full shake done
+            teabag_shake_count++;
+            ESP_LOGI(TAG, "Shake %d complete", teabag_shake_count);
+            
+            if (teabag_shake_count < 3) {
+                // More shakes to do, go down again
+                teabag_shake_going_down = true;
+                
+                if (teabag_dropoff_timer != NULL) {
+                    xTimerChangePeriod(teabag_dropoff_timer, pdMS_TO_TICKS(100), 0);
+                    xTimerStart(teabag_dropoff_timer, 0);
+                }
+            } else {
+                // All 3 shakes done, move to idle position
+                ESP_LOGI(TAG, "All shakes complete - moving to idle position");
+                int idle_pos = settings_get_idle_position();
+                ESP_LOGI(TAG, "Moving to idle position: %d%%", idle_pos);
+                uart_comm_move_to_percent((float)idle_pos);
             }
         } else {
-            // We've returned to drying position - brewing cycle complete
+            // We're at idle position, brewing complete
             finish_brew_cycle();
         }
     }
@@ -738,21 +726,19 @@ static void finish_brew_cycle(void)
     if (brewing_pot_check_timer != NULL) {
         xTimerStop(brewing_pot_check_timer, 0);
     }
-    if (drying_timer != NULL) {
-        xTimerStop(drying_timer, 0);
-    }
-    if (final_drop_timer != NULL) {
-        xTimerStop(final_drop_timer, 0);
+    if (teabag_dropoff_timer != NULL) {
+        xTimerStop(teabag_dropoff_timer, 0);
     }
     
     // Reset state (already on main screen, temperature timer already slow)
     current_brew_state = BREW_STATE_IDLE;
     brewing_start_temp_captured = false;
+    teabag_shake_count = 0;
     
     // Clear move complete callback
     uart_comm_set_move_complete_callback(NULL);
     
-    ESP_LOGI(TAG, "Background drying and final drop complete - motor at drying position");
+    ESP_LOGI(TAG, "Teabag dropoff complete - motor at idle position");
 }
 
 /* ============================================
@@ -949,10 +935,8 @@ void stopBrewing(lv_event_t * e)
         ESP_LOGI(TAG, "Stopped during infusing");
     } else if (current_brew_state == BREW_STATE_BREWING) {
         ESP_LOGI(TAG, "Stopping brew");
-    } else if (current_brew_state == BREW_STATE_DRYING) {
-        ESP_LOGI(TAG, "Stopped during drying");
-    } else if (current_brew_state == BREW_STATE_FINAL_DROP) {
-        ESP_LOGI(TAG, "Stopped during final drop");
+    } else if (current_brew_state == BREW_STATE_TEABAG_DROPOFF) {
+        ESP_LOGI(TAG, "Stopped during teabag dropoff");
     }
     
     // Turn off induction cooker
@@ -968,20 +952,17 @@ void stopBrewing(lv_event_t * e)
     if (infusion_timer != NULL) {
         xTimerStop(infusion_timer, 0);
     }
-    if (drying_timer != NULL) {
-        xTimerStop(drying_timer, 0);
-    }
-    if (final_drop_timer != NULL) {
-        xTimerStop(final_drop_timer, 0);
+    if (teabag_dropoff_timer != NULL) {
+        xTimerStop(teabag_dropoff_timer, 0);
     }
     
     // Clear move complete callback
     uart_comm_set_move_complete_callback(NULL);
     
-    // Move motor back to drying position (safe position)
-    int drying_pos = settings_get_drying_position();
-    ESP_LOGI(TAG, "Moving to drying position: %d%%", drying_pos);
-    uart_comm_move_to_percent((float)drying_pos);
+    // Move motor back to idle position (safe position)
+    int idle_pos = settings_get_idle_position();
+    ESP_LOGI(TAG, "Moving to idle position: %d%%", idle_pos);
+    uart_comm_move_to_percent((float)idle_pos);
     
     // Change temperature update back to slow interval (idle mode)
     if (temperature_request_timer != NULL) {
@@ -992,6 +973,7 @@ void stopBrewing(lv_event_t * e)
     // Reset state
     current_brew_state = BREW_STATE_IDLE;
     brewing_start_temp_captured = false;
+    teabag_shake_count = 0;
     
     // Navigate back to MainScreen
     extern lv_obj_t * ui_MainScreen;
@@ -1216,81 +1198,90 @@ void changeBrewingTeaTemperature(lv_event_t * e)
     }
 }
 
-void changeDryingTime(lv_event_t * e)
+void idlePositionUp(lv_event_t * e)
 {
-    lv_obj_t * roller = lv_event_get_target(e);
-    if (roller) {
-        uint16_t selected = lv_roller_get_selected(roller);
-        settings_set_drying_time((uint8_t)selected);
-    }
-}
-
-void dryingPositionUp(lv_event_t * e)
-{
-    int current_position = settings_get_drying_position();
+    int current_position = settings_get_idle_position();
     
     // Limit to 0-100 range
     if (current_position >= 100) {
-        ESP_LOGW(TAG, "Drying position already at maximum (100%%)");
+        ESP_LOGW(TAG, "Idle position already at maximum (100%%)");
         return;
     }
     
     current_position++;
-    settings_set_drying_position_no_save(current_position);
+    settings_set_idle_position_no_save(current_position);
     
     // Move motor to new position
-    ui_motor_move_to_drying_position(current_position);
+    ui_motor_move_to_position(current_position);
     
-    ESP_LOGI(TAG, "Drying position UP: %d%%", current_position);
+    ESP_LOGI(TAG, "Idle position UP: %d%%", current_position);
     
     // Create or reset timer for delayed NVS write (10 seconds)
-    if (drying_position_save_timer == NULL) {
-        drying_position_save_timer = xTimerCreate(
-            "DryingPosSave",
+    if (idle_position_save_timer == NULL) {
+        idle_position_save_timer = xTimerCreate(
+            "IdlePosSave",
             pdMS_TO_TICKS(10000),
             pdFALSE,
             0,
-            drying_position_save_timer_callback
+            idle_position_save_timer_callback
         );
     }
     
-    if (drying_position_save_timer != NULL) {
-        xTimerReset(drying_position_save_timer, 0);
+    if (idle_position_save_timer != NULL) {
+        xTimerReset(idle_position_save_timer, 0);
     }
 }
 
-void dryingPositionDown(lv_event_t * e)
+void idlePositionDown(lv_event_t * e)
 {
-    int current_position = settings_get_drying_position();
+    int current_position = settings_get_idle_position();
     
     // Limit to 0-100 range
     if (current_position <= 0) {
-        ESP_LOGW(TAG, "Drying position already at minimum (0%%)");
+        ESP_LOGW(TAG, "Idle position already at minimum (0%%)");
         return;
     }
     
     current_position--;
-    settings_set_drying_position_no_save(current_position);
+    settings_set_idle_position_no_save(current_position);
     
     // Move motor to new position
-    ui_motor_move_to_drying_position(current_position);
+    ui_motor_move_to_position(current_position);
     
-    ESP_LOGI(TAG, "Drying position DOWN: %d%%", current_position);
+    ESP_LOGI(TAG, "Idle position DOWN: %d%%", current_position);
     
     // Create or reset timer for delayed NVS write (10 seconds)
-    if (drying_position_save_timer == NULL) {
-        drying_position_save_timer = xTimerCreate(
-            "DryingPosSave",
+    if (idle_position_save_timer == NULL) {
+        idle_position_save_timer = xTimerCreate(
+            "IdlePosSave",
             pdMS_TO_TICKS(10000),
             pdFALSE,
             0,
-            drying_position_save_timer_callback
+            idle_position_save_timer_callback
         );
     }
     
-    if (drying_position_save_timer != NULL) {
-        xTimerReset(drying_position_save_timer, 0);
+    if (idle_position_save_timer != NULL) {
+        xTimerReset(idle_position_save_timer, 0);
     }
+}
+
+// Debug function to trigger teabag dropoff sequence
+void startTeabagDropoff(lv_event_t * e)
+{
+#if DEBUG_ENABLED
+    ESP_LOGI(TAG, "DEBUG: Starting teabag dropoff sequence");
+    
+    // Only start if currently idle
+    if (current_brew_state != BREW_STATE_IDLE) {
+        ESP_LOGW(TAG, "Cannot start teabag dropoff - brewing in progress");
+        return;
+    }
+    
+    start_teabag_dropoff();
+#else
+    ESP_LOGW(TAG, "Teabag dropoff debug function not available in production");
+#endif
 }
 
 void changeSchedulerTemperature(lv_event_t * e)
@@ -1471,13 +1462,6 @@ void onSettingsScreen(lv_event_t * e)
     ui_theme_variable_t *color_ptr = (ui_theme_variable_t *)_ui_theme_color_teacolor;
     color_ptr[0] = tea_colors[0];
     _ui_theme_set_variable_styles(UI_VARIABLE_STYLES_MODE_FOLLOW);
-    
-    // Load drying time from NVS and update roller
-    extern lv_obj_t * ui_Roller5;
-    if (ui_Roller5) {
-        uint8_t drying_time = settings_get_drying_time();
-        lv_roller_set_selected(ui_Roller5, drying_time, LV_ANIM_OFF);
-    }
 }
 
 void onSchedulerScreen(lv_event_t * e)

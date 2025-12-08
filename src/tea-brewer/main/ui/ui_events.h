@@ -10,13 +10,16 @@
 extern "C" {
 #endif
 
+// Debug mode flag - set to 0 for production builds
+#define DEBUG_ENABLED 0
+
 // Global tea index for navigation
 extern uint8_t current_tea_index;
 
 // Initialize UI events - creates NVS save task
 void ui_events_init(void);
 
-// Startup motor initialization - home and move to drying position
+// Startup motor initialization - home and move to idle position
 void ui_startup_motor_init(void);
 
 void onMainScreen(lv_event_t * e);
@@ -33,9 +36,9 @@ void changeInfusionTimeMinute(lv_event_t * e);
 void onBrewNowOrSchedulerScreen(lv_event_t * e);
 void brewNow(lv_event_t * e);
 void onSettingsScreen(lv_event_t * e);
-void changeDryingTime(lv_event_t * e);
-void dryingPositionUp(lv_event_t * e);
-void dryingPositionDown(lv_event_t * e);
+void idlePositionUp(lv_event_t * e);
+void idlePositionDown(lv_event_t * e);
+void startTeabagDropoff(lv_event_t * e);
 void onSchedulerScreen(lv_event_t * e);
 void changeSchedulerTemperature(lv_event_t * e);
 void changeSchedulerTimeMinute(lv_event_t * e);
