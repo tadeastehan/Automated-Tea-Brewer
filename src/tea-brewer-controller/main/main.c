@@ -30,6 +30,8 @@
 #include "temperature_sensor/thermometer.h"
 #include "distance_sensor/distance_sensor.h"
 #include "pot_sensor/pot_sensor.h"
+#include "rtc/rtc.h"
+#include <time.h>
 
 static const char *TAG = "MAIN";
 
@@ -124,6 +126,34 @@ static void distance_task(void *arg)
 }
 
 /**
+ * @brief RTC reading task
+ * 
+ * Reads and prints current time every 500ms (adjusted for GMT+1 timezone)
+ */
+static void rtc_task(void *arg)
+{
+    struct tm time;
+    
+    while (1) {
+        if (rtc_is_initialized()) {
+            esp_err_t ret = rtc_get_time_with_timezone(&time);
+            if (ret == ESP_OK) {
+                console_printf("%04d-%02d-%02d %02d:%02d:%02d (GMT+1)\r\n", 
+                              time.tm_year + 1900, 
+                              time.tm_mon + 1,
+                              time.tm_mday, 
+                              time.tm_hour, 
+                              time.tm_min, 
+                              time.tm_sec);
+            } else {
+                console_printf("RTC: ERROR\r\n");
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+/**
  * @brief Application entry point
  */
 void app_main(void)
@@ -211,6 +241,19 @@ void app_main(void)
     }
     
     /* ========================================
+       STEP 5.7: Initialize RTC (DS1307)
+       ======================================== */
+    console_printf("Initializing RTC...\r\n");
+    /* Share I2C bus with temperature and distance sensors */
+    ret = rtc_init(i2c_bus);
+    if (ret == ESP_OK) {
+        console_printf("RTC: OK\r\n");
+    } else {
+        console_printf("RTC: FAILED\r\n");
+        ESP_LOGW(TAG, "RTC init failed: %s", esp_err_to_name(ret));
+    }
+    
+    /* ========================================
        STEP 6: Initialize UART Communication
        ======================================== */
     console_printf("Initializing UART...\r\n");
@@ -245,6 +288,12 @@ void app_main(void)
     if (pot_sensor_is_initialized()) {
         xTaskCreate(distance_task, "distance_task", 2048, NULL, 5, NULL);
         ESP_LOGI(TAG, "Pot sensor task started (250ms interval)");
+    }
+    
+    /* Start RTC reading task (only if DEBUG enabled) */
+    if (rtc_is_initialized()) {
+        xTaskCreate(rtc_task, "rtc_task", configMINIMAL_STACK_SIZE * 8, NULL, 5, NULL);
+        ESP_LOGI(TAG, "RTC task started (500ms interval)");
     }
 #endif
     
