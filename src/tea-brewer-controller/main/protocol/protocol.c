@@ -127,6 +127,15 @@ uint8_t proto_build_pot_presence(uint8_t *buffer, bool is_present, uint16_t dist
     return proto_build_frame(buffer, RSP_POT_PRESENCE, data, 3);
 }
 
+uint8_t proto_build_schedule_status(uint8_t *buffer, uint32_t target_time, uint32_t remaining_sec)
+{
+    uint8_t data[8];
+    memcpy(&data[0], &target_time, 4);
+    memcpy(&data[4], &remaining_sec, 4);
+    
+    return proto_build_frame(buffer, RSP_SCHEDULE_STATUS, data, 8);
+}
+
 /* ============================================
    FRAME PARSING
    ============================================ */

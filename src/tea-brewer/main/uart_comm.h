@@ -100,6 +100,11 @@ typedef void (*uart_comm_temperature_cb_t)(float object_temp, float ambient_temp
  */
 typedef void (*uart_comm_pot_presence_cb_t)(bool is_present, uint16_t distance_mm);
 
+/**
+ * @brief Callback for brew started notification (from Scheduler)
+ */
+typedef void (*uart_comm_brew_started_cb_t)(void);
+
 /* ============================================
    INITIALIZATION
    ============================================ */
@@ -303,6 +308,25 @@ bool uart_comm_is_connected(void);
  * @return Error code or 0 if no error
  */
 uint8_t uart_comm_get_last_error(void);
+
+/**
+ * @brief Set schedule on Motor Controller
+ * @param hour Target hour (0-23)
+ * @param minute Target minute (0-59)
+ * @param target_temp Target temperature to drink at
+ * @param brewing_temp Temperature to brew at (start of cooling)
+ */
+void uart_comm_set_schedule(uint8_t hour, uint8_t minute, uint8_t target_temp, uint8_t brewing_temp);
+
+/**
+ * @brief Cancel schedule on Motor Controller
+ */
+void uart_comm_cancel_schedule(void);
+
+/**
+ * @brief Register callback for brew started notification
+ */
+void uart_comm_set_brew_started_callback(uart_comm_brew_started_cb_t cb);
 
 #ifdef __cplusplus
 }

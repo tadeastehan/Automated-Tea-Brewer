@@ -35,6 +35,11 @@ static const sys_param_t g_default_sys_param = {
         {.temperature = 80, .infusion_time = 240},   // Tea 4: White Tea - 4 min, 80°C
         {.temperature = 100, .infusion_time = 300},  // Tea 5: Functional Tea - 5 min, 100°C
     },
+    .schedule_active = false,
+    .schedule_hour = 0,
+    .schedule_minute = 0,
+    .schedule_target_temp = 0,
+    .schedule_tea_index = 0,
 };
 
 static esp_err_t settings_check(sys_param_t *param)
@@ -167,4 +172,34 @@ void settings_set_tea_infusion_time_no_save(uint8_t tea_index, uint16_t seconds)
 void settings_flush_tea_params(void)
 {
     settings_write_parameter_to_nvs();
+}
+
+void settings_set_schedule(uint8_t hour, uint8_t minute, uint8_t target_temp, uint8_t tea_index)
+{
+    g_sys_param.schedule_active = true;
+    g_sys_param.schedule_hour = hour;
+    g_sys_param.schedule_minute = minute;
+    g_sys_param.schedule_target_temp = target_temp;
+    g_sys_param.schedule_tea_index = tea_index;
+    settings_write_parameter_to_nvs();
+}
+
+void settings_clear_schedule(void)
+{
+    g_sys_param.schedule_active = false;
+    settings_write_parameter_to_nvs();
+}
+
+bool settings_get_schedule(uint8_t *hour, uint8_t *minute, uint8_t *target_temp, uint8_t *tea_index)
+{
+    if (!g_sys_param.schedule_active) {
+        return false;
+    }
+    
+    if (hour) *hour = g_sys_param.schedule_hour;
+    if (minute) *minute = g_sys_param.schedule_minute;
+    if (target_temp) *target_temp = g_sys_param.schedule_target_temp;
+    if (tea_index) *tea_index = g_sys_param.schedule_tea_index;
+    
+    return true;
 }

@@ -9,6 +9,7 @@
 #include "../motor/motor_control.h"
 #include "../temperature_sensor/thermometer.h"
 #include "../pot_sensor/pot_sensor.h"
+#include "../scheduler.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -115,6 +116,11 @@ static void send_notify(uint8_t type, uint8_t data)
     uart_comm_send(tx_buffer, len);
 }
 
+void uart_comm_send_notification(uint8_t notify_id)
+{
+    send_notify(notify_id, 0);
+}
+
 static void send_temperature(void)
 {
     float object_temp = 0.0f;
@@ -140,6 +146,17 @@ static void send_pot_presence(void)
     }
     
     uint8_t len = proto_build_pot_presence(tx_buffer, is_present, distance_mm);
+    uart_comm_send(tx_buffer, len);
+}
+
+static void send_schedule_status(void)
+{
+    uint32_t target_time = 0;
+    uint32_t remaining_sec = 0;
+    
+    scheduler_get_status(&target_time, &remaining_sec);
+    
+    uint8_t len = proto_build_schedule_status(tx_buffer, target_time, remaining_sec);
     uart_comm_send(tx_buffer, len);
 }
 
@@ -179,14 +196,14 @@ static void induction_button_press(void)
     ESP_LOGI(TAG, "Induction button press complete");
 }
 
-static void induction_on(void)
+void uart_comm_induction_on(void)
 {
     ESP_LOGI(TAG, "Induction cooker ON - sending button press");
     induction_button_press();
     induction_is_on = true;
 }
 
-static void induction_off(void)
+void uart_comm_induction_off(void)
 {
     ESP_LOGI(TAG, "Induction cooker OFF - sending button press");
     induction_button_press();
@@ -368,7 +385,7 @@ static void handle_command(proto_frame_t *frame)
                     ESP_LOGW(TAG, "Rejecting INDUCTION_ON - motor is busy");
                     send_nak(PROTO_ERR_MOTOR_FAULT);
                 } else {
-                    induction_on();
+                    uart_comm_induction_on();
                     send_ack();
                 }
             }
@@ -376,8 +393,33 @@ static void handle_command(proto_frame_t *frame)
             
         case CMD_INDUCTION_OFF:
             ESP_LOGI(TAG, "INDUCTION_OFF command");
-            induction_off();
+            uart_comm_induction_off();
             send_ack();
+            break;
+
+        case CMD_SET_SCHEDULE:
+            if (frame->length >= 4) {
+                uint8_t hour = frame->data[0];
+                uint8_t minute = frame->data[1];
+                uint8_t target_temp = frame->data[2];
+                uint8_t brewing_temp = frame->data[3];
+                ESP_LOGI(TAG, "SET_SCHEDULE: Time %02d:%02d, Target %d, Brew %d", hour, minute, target_temp, brewing_temp);
+                scheduler_set(hour, minute, target_temp, brewing_temp);
+                send_ack();
+            } else {
+                send_nak(PROTO_ERR_INVALID_DATA);
+            }
+            break;
+
+        case CMD_CANCEL_SCHEDULE:
+            ESP_LOGI(TAG, "CANCEL_SCHEDULE command");
+            scheduler_cancel();
+            send_ack();
+            break;
+
+        case CMD_GET_SCHEDULE_STATUS:
+            ESP_LOGD(TAG, "GET_SCHEDULE_STATUS");
+            send_schedule_status();
             break;
             
         default:
@@ -440,7 +482,7 @@ static void uart_comm_task(void *pvParameters)
             /* Turn off induction cooker for safety */
             if (induction_is_on) {
                 ESP_LOGW(TAG, "Turning off induction cooker for safety");
-                induction_off();
+                uart_comm_induction_off();
             }
         }
         

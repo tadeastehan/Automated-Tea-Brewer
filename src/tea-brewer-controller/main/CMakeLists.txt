@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS 
         "main.c"
+        "scheduler.c"
         "motor/tmc2130.c"
         "motor/motor_control.c"
         "console/console.c"

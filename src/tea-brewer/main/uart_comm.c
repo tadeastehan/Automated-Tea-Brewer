@@ -38,6 +38,9 @@ static const char *TAG = "UART_COMM";
 #define CMD_GET_POT_PRESENCE    0x51
 #define CMD_INDUCTION_ON        0x52
 #define CMD_INDUCTION_OFF       0x53
+#define CMD_SET_SCHEDULE        0x60
+#define CMD_CANCEL_SCHEDULE     0x61
+#define CMD_GET_SCHEDULE_STATUS 0x62
 
 /* Response IDs */
 #define RSP_ACK                 0x80
@@ -53,6 +56,7 @@ static const char *TAG = "UART_COMM";
 #define NOTIFY_MOVE_COMPLETE    0xA0
 #define NOTIFY_HOME_COMPLETE    0xA1
 #define NOTIFY_CALIBRATE_DONE   0xA2
+#define NOTIFY_BREW_STARTED     0xB0
 #define NOTIFY_ERROR            0xAF
 
 /* ============================================
@@ -83,6 +87,7 @@ static uart_comm_calibrate_complete_cb_t calibrate_complete_callback = NULL;
 static uart_comm_error_cb_t error_callback = NULL;
 static uart_comm_temperature_cb_t temperature_callback = NULL;
 static uart_comm_pot_presence_cb_t pot_presence_callback = NULL;
+static uart_comm_brew_started_cb_t brew_started_callback = NULL;
 
 /* Startup state */
 static bool startup_sequence_done = false;
@@ -422,6 +427,13 @@ static void handle_response(proto_frame_t *frame)
                 calibrate_complete_callback(true);
             }
             break;
+
+        case NOTIFY_BREW_STARTED:
+            ESP_LOGI(TAG, "Brew started notification received");
+            if (brew_started_callback) {
+                brew_started_callback();
+            }
+            break;
             
         case NOTIFY_ERROR:
             if (frame->length >= 1) {
@@ -466,10 +478,10 @@ static void uart_comm_task(void *pvParameters)
             }
         }
         
-        /* Periodic ping to check connection */
+        /* Periodic status update to check connection and keep UI synced */
         int64_t now = esp_timer_get_time();
         if ((now - last_ping_time) >= (PING_INTERVAL_MS * 1000)) {
-            uart_comm_ping();
+            uart_comm_get_status();
             last_ping_time = now;
         }
         
@@ -773,4 +785,24 @@ bool uart_comm_is_connected(void)
 uint8_t uart_comm_get_last_error(void)
 {
     return last_error;
+}
+
+void uart_comm_set_schedule(uint8_t hour, uint8_t minute, uint8_t target_temp, uint8_t brewing_temp)
+{
+    uint8_t data[4];
+    data[0] = hour;
+    data[1] = minute;
+    data[2] = target_temp;
+    data[3] = brewing_temp;
+    send_command(CMD_SET_SCHEDULE, data, 4);
+}
+
+void uart_comm_cancel_schedule(void)
+{
+    send_command(CMD_CANCEL_SCHEDULE, NULL, 0);
+}
+
+void uart_comm_set_brew_started_callback(uart_comm_brew_started_cb_t cb)
+{
+    brew_started_callback = cb;
 }

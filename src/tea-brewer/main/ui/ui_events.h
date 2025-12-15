@@ -19,6 +19,15 @@ extern uint8_t current_tea_index;
 // Initialize UI events - creates NVS save task
 void ui_events_init(void);
 
+// Process any pending schedule (called after motor homing)
+void ui_events_process_pending_schedule(void);
+
+// Start a scheduled brew
+void ui_start_schedule_brew(uint8_t hour, uint8_t minute, uint8_t target_temp);
+
+// Cancel a scheduled brew
+void ui_cancel_schedule_brew(void);
+
 // Startup motor initialization - home and move to idle position
 void ui_startup_motor_init(void);
 

@@ -49,6 +49,18 @@ static int console_getchar(void)
     return (len > 0) ? (int)c : -1;
 }
 
+bool console_has_input(void)
+{
+    uint8_t c;
+    int len = usb_serial_jtag_read_bytes(&c, 1, 0);
+    if (len > 0) {
+        // Put it back (we just peeked)
+        // Note: This is a simple implementation - proper peek would need buffering
+        return true;
+    }
+    return false;
+}
+
 /* ============================================
    COMMAND HANDLERS
    ============================================ */
@@ -56,10 +68,12 @@ static void print_help(void)
 {
     console_printf("\r\n=== MOTOR CONTROL COMMANDS ===\r\n");
     console_printf("  c     - Full calibration (without load)\r\n");
+    console_printf("  t     - Calibrate with SG monitoring\r\n");
     console_printf("  f     - Fast home\r\n");
     console_printf("  0-100 - Move to percent\r\n");
     console_printf("  r     - Go to 0%%\r\n");
     console_printf("  m     - Go to 50%%\r\n");
+    console_printf("  g     - Read StallGuard value\r\n");
     console_printf("  i/d   - Increase/decrease SGT\r\n");
     console_printf("  w     - Save to flash\r\n");
     console_printf("  z     - Clear calibration\r\n");
@@ -94,6 +108,18 @@ static void process_command(const char *cmd)
                 console_printf("Starting calibration...\r\n");
                 motor_calibrate();
                 console_printf("Calibration complete.\r\n");
+                break;
+            case 't': case 'T':
+                console_printf("Starting calibration with SG monitoring...\r\n");
+                console_printf("Press any key to stop monitoring.\r\n\r\n");
+                motor_calibrate_with_sg_monitor();
+                console_printf("Calibration complete.\r\n");
+                break;
+            case 'g': case 'G':
+                {
+                    uint16_t sg_value = motor_read_stallguard();
+                    console_printf("StallGuard value: %u\r\n", sg_value);
+                }
                 break;
             case 'f': case 'F':
                 console_printf("Homing...\r\n");

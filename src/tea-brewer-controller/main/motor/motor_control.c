@@ -412,6 +412,128 @@ esp_err_t motor_calibrate(void)
     return ESP_OK;
 }
 
+esp_err_t motor_calibrate_with_sg_monitor(void)
+{
+    extern void console_printf(const char *fmt, ...);
+    extern bool console_has_input(void);
+    
+    ESP_LOGI(TAG, "Starting calibration with SG monitoring...");
+    console_printf("=== CALIBRATION WITH STALLGUARD MONITORING ===\r\n");
+    
+    current_state = MOTOR_STATE_CALIBRATING;
+    is_homed = false;
+    calibration.is_valid = false;
+    
+    configure_for_homing();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    /* Find first endpoint with monitoring */
+    console_printf("Finding first endpoint...\r\n");
+    set_speed_rpm(HOMING_SPEED_RPM);
+    start_continuous_movement(false);
+    
+    bool stall_detected = false;
+    uint16_t last_sg = 0;
+    while (motor_running && !stall_detected) {
+        uint16_t sg_val = tmc2130_get_sg_result(&tmc2130);
+        if (sg_val != last_sg) {
+            console_printf("SG: %4u\r\n", sg_val);
+            last_sg = sg_val;
+        }
+        
+        if (check_stall()) {
+            motor_running = false;
+            gptimer_stop(step_timer);
+            stall_detected = true;
+            console_printf("*** STALL DETECTED at SG=%u ***\r\n", sg_val);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    
+    move_steps_blocking(calibration.backoff_steps);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    
+    console_printf("\r\nPress any key to continue or wait 3 seconds...\r\n");
+    for (int i = 0; i < 30; i++) {
+        if (console_has_input()) break;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    
+    console_printf("Finding first endpoint (precise)...\r\n");
+    start_continuous_movement(false);
+    last_sg = 0;
+    while (motor_running && !check_stall()) {
+        uint16_t sg_val = tmc2130_get_sg_result(&tmc2130);
+        if (sg_val != last_sg) {
+            console_printf("SG: %4u\r\n", sg_val);
+            last_sg = sg_val;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    motor_running = false;
+    gptimer_stop(step_timer);
+    
+    current_position = 0;
+    move_steps_blocking(calibration.backoff_steps);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    /* Find second endpoint with monitoring */
+    console_printf("\r\nFinding second endpoint...\r\n");
+    start_continuous_movement(true);
+    last_sg = 0;
+    while (motor_running && !check_stall()) {
+        uint16_t sg_val = tmc2130_get_sg_result(&tmc2130);
+        if (sg_val != last_sg) {
+            console_printf("SG: %4u\r\n", sg_val);
+            last_sg = sg_val;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    motor_running = false;
+    gptimer_stop(step_timer);
+    
+    int32_t max_pos = current_position;
+    move_steps_blocking(-calibration.backoff_steps);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    
+    console_printf("\r\nFinding second endpoint (precise)...\r\n");
+    start_continuous_movement(true);
+    last_sg = 0;
+    while (motor_running && !check_stall()) {
+        uint16_t sg_val = tmc2130_get_sg_result(&tmc2130);
+        if (sg_val != last_sg) {
+            console_printf("SG: %4u\r\n", sg_val);
+            last_sg = sg_val;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    motor_running = false;
+    gptimer_stop(step_timer);
+    
+    max_pos = current_position;
+    
+    /* Save calibration */
+    calibration.total_steps = max_pos;
+    calibration.is_valid = true;
+    is_homed = true;
+    
+    move_steps_blocking(-calibration.backoff_steps);
+    
+    motor_save_calibration();
+    
+    configure_for_normal_operation();
+    set_speed_rpm(NORMAL_SPEED_RPM);
+    current_state = MOTOR_STATE_IDLE;
+    
+    console_printf("\r\n=== CALIBRATION COMPLETE ===\r\n");
+    console_printf("Total steps: %ld\r\n", (long)calibration.total_steps);
+    console_printf("SGT threshold: %d\r\n", calibration.sgt_threshold);
+    console_printf("============================\r\n\r\n");
+    
+    ESP_LOGI(TAG, "Calibration complete: %ld steps", (long)calibration.total_steps);
+    return ESP_OK;
+}
+
 esp_err_t motor_home(void)
 {
     if (!calibration.is_valid) {

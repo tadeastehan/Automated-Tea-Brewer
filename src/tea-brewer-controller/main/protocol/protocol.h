@@ -48,6 +48,9 @@ typedef enum
     CMD_GET_POT_PRESENCE = 0x51,
     CMD_INDUCTION_ON = 0x52,
     CMD_INDUCTION_OFF = 0x53,
+    CMD_SET_SCHEDULE = 0x60,
+    CMD_CANCEL_SCHEDULE = 0x61,
+    CMD_GET_SCHEDULE_STATUS = 0x62,
 
     /* Responses (Motor Controller -> Display) */
     RSP_ACK = 0x80,
@@ -58,11 +61,13 @@ typedef enum
     RSP_PONG = 0x85,
     RSP_TEMPERATURE = 0x86,
     RSP_POT_PRESENCE = 0x87,
+    RSP_SCHEDULE_STATUS = 0x88,
 
     /* Async notifications (Motor Controller -> Display) */
     NOTIFY_MOVE_COMPLETE = 0xA0,
     NOTIFY_HOME_COMPLETE = 0xA1,
     NOTIFY_CALIBRATE_DONE = 0xA2,
+    NOTIFY_BREW_STARTED = 0xB0,
     NOTIFY_ERROR = 0xAF,
 } protocol_cmd_t;
 
@@ -78,6 +83,7 @@ typedef enum
     PROTO_ERR_NOT_HOMED = 0x04,
     PROTO_ERR_BUSY = 0x05,
     PROTO_ERR_MOTOR_FAULT = 0x06,
+    PROTO_ERR_INVALID_DATA = 0x07,
 } protocol_error_t;
 
 /* ============================================
@@ -205,4 +211,30 @@ uint8_t proto_build_temperature(uint8_t *buffer, float object_temp, float ambien
  */
 uint8_t proto_build_pot_presence(uint8_t *buffer, bool is_present, uint16_t distance_mm);
 
-#endif // PROTOCOL_H
+/**
+ * @brief Build schedule status response
+ * @param buffer Output buffer
+ * @param target_time Target timestamp (unix time)
+ * @param remaining_sec Remaining seconds until brew starts
+ * @return Frame length
+ */
+uint8_t proto_build_schedule_status(uint8_t *buffer, uint32_t target_time, uint32_t remaining_sec);
+
+/* ============================================
+   FRAME PARSING
+   ============================================ */
+
+/**
+ * @brief Reset protocol parser
+ */
+void proto_parser_reset(void);
+
+/**
+ * @brief Parse a byte from the stream
+ * @param byte Input byte
+ * @param frame Pointer to frame structure to fill
+ * @return true if a valid frame was received
+ */
+bool proto_parse_byte(uint8_t byte, proto_frame_t *frame);
+
+#endif

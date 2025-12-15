@@ -28,6 +28,13 @@ typedef struct {
     uint8_t language;
     int idle_position;        // Idle position percentage (0-100)
     tea_params_t tea_params[MAX_TEA_TYPES];  // Tea-specific parameters
+    
+    // Schedule parameters
+    bool schedule_active;
+    uint8_t schedule_hour;
+    uint8_t schedule_minute;
+    uint8_t schedule_target_temp;
+    uint8_t schedule_tea_index;
 } sys_param_t;
 
 esp_err_t settings_read_parameter_from_nvs(void);
@@ -39,6 +46,11 @@ void settings_set_idle_position(int position);
 int settings_get_idle_position(void);
 void settings_set_idle_position_no_save(int position);  // Set position without saving to NVS
 void settings_flush_idle_position(void);  // Force write idle position to NVS
+
+// Schedule functions
+void settings_set_schedule(uint8_t hour, uint8_t minute, uint8_t target_temp, uint8_t tea_index);
+bool settings_get_schedule(uint8_t *hour, uint8_t *minute, uint8_t *target_temp, uint8_t *tea_index);
+void settings_clear_schedule(void);
 
 // Tea parameters functions
 void settings_set_tea_temperature(uint8_t tea_index, uint8_t temperature);

@@ -84,6 +84,13 @@ esp_err_t motor_clear_calibration(void);
 esp_err_t motor_calibrate(void);
 
 /**
+ * @brief Perform calibration with StallGuard monitoring
+ * @note Run WITHOUT load! Displays SG values during calibration
+ * @return ESP_OK on success
+ */
+esp_err_t motor_calibrate_with_sg_monitor(void);
+
+/**
  * @brief Perform fast home (finds start position only)
  * @note Can be run with load
  * @return ESP_OK on success

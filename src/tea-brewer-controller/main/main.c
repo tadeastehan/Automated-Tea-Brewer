@@ -31,11 +31,12 @@
 #include "distance_sensor/distance_sensor.h"
 #include "pot_sensor/pot_sensor.h"
 #include "rtc/rtc.h"
+#include "scheduler.h"
 #include <time.h>
 
 static const char *TAG = "MAIN";
 
-#define DEBUG 0  // Set to 1 to enable distance sensor debug output
+#define DEBUG 1  // Set to 1 to enable distance sensor debug output
 
 /**
  * @brief Initialize NVS flash storage
@@ -100,6 +101,7 @@ static void print_startup_status(void)
     console_printf("\r\n");
 }
 
+#if DEBUG
 /**
  * @brief Distance sensor reading task
  * 
@@ -152,6 +154,7 @@ static void rtc_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
+#endif
 
 /**
  * @brief Application entry point
@@ -276,6 +279,9 @@ void app_main(void)
        STEP 8: Start Communication Tasks
        ======================================== */
     ESP_LOGI(TAG, "Starting tasks...");
+    
+    /* Initialize Scheduler */
+    scheduler_init();
     
     /* Start console task (USB Serial JTAG - human interface) */
     console_start_task();

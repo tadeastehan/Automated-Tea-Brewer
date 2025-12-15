@@ -26,6 +26,11 @@ void console_printf(const char *fmt, ...);
 void console_print(const char *str);
 
 /**
+ * @brief Check if console has input available (non-blocking)
+ */
+bool console_has_input(void);
+
+/**
  * @brief Start console task (handles human commands)
  */
 void console_start_task(void);

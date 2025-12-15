@@ -7,6 +7,7 @@
 #include "ui_events.h"
 #include "../settings.h"
 #include <stdio.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
@@ -49,6 +50,9 @@ static TimerHandle_t brewing_pot_check_timer = NULL;    // Check pot every 5s du
 static TimerHandle_t brewing_timeout_timer = NULL;      // 20 minute max brewing time
 static TimerHandle_t infusion_timer = NULL;             // 1 second timer for infusion countdown
 static TimerHandle_t teabag_dropoff_timer = NULL;       // Timer for teabag shake sequence
+static uint8_t scheduled_target_temp = 0;
+static uint8_t scheduled_hour = 0;
+static uint8_t scheduled_minute = 0;
 
 /* ============================================
    BREWING STATE MACHINE
@@ -100,6 +104,9 @@ static void pot_timeout_timer_callback(TimerHandle_t xTimer);
 static void on_pot_presence_update(bool is_present, uint16_t distance_mm);
 static void start_pot_detection(bool for_scheduler);
 static void stop_pot_detection(void);
+static void on_brew_started(void);
+
+static bool schedule_restore_pending = false;
 
 /* Brewing state machine forward declarations */
 static void brewing_pot_check_callback(TimerHandle_t xTimer);
@@ -174,6 +181,25 @@ void ui_events_init(void)
     
     /* Register pot presence callback */
     uart_comm_set_pot_presence_callback(on_pot_presence_update);
+
+    /* Register brew started callback */
+    uart_comm_set_brew_started_callback(on_brew_started);
+    
+    /* Check for saved schedule */
+    uint8_t saved_hour, saved_minute, saved_target_temp, saved_tea_index;
+    if (settings_get_schedule(&saved_hour, &saved_minute, &saved_target_temp, &saved_tea_index)) {
+        ESP_LOGI(TAG, "Restoring saved schedule: %02d:%02d, Target: %d C, Tea: %d", saved_hour, saved_minute, saved_target_temp, saved_tea_index);
+        
+        // Restore state variables
+        scheduled_hour = saved_hour;
+        scheduled_minute = saved_minute;
+        scheduled_target_temp = saved_target_temp;
+        current_tea_index = saved_tea_index;
+        
+        // Mark schedule as pending - will be processed after motor homing
+        schedule_restore_pending = true;
+        ESP_LOGI(TAG, "Schedule restore pending - waiting for motor homing");
+    }
     
     /* Create temperature request timer (starts with idle interval) */
     if (temperature_request_timer == NULL) {
@@ -400,6 +426,69 @@ static void infusion_timer_callback(TimerHandle_t xTimer)
     }
 }
 
+static void on_brew_started(void) {
+    ESP_LOGI(TAG, "Brew started notification received from Controller! Calling brewNow...");
+    
+    // We need to lock LVGL because brewNow calls UI functions and we are in UART task context
+    if (lvgl_port_lock(100)) {
+        brewNow(NULL);
+        lvgl_port_unlock();
+    }
+}
+
+void ui_events_process_pending_schedule(void)
+{
+    if (schedule_restore_pending) {
+        ESP_LOGI(TAG, "Processing pending schedule...");
+        
+        current_brew_state = BREW_STATE_SCHEDULED;
+        
+        // Send schedule to Controller
+        uint8_t brewing_temp = settings_get_tea_temperature(current_tea_index);
+        uart_comm_set_schedule(scheduled_hour, scheduled_minute, scheduled_target_temp, brewing_temp);
+        
+        // Switch to scheduled screen
+        if (lvgl_port_lock(0)) {
+            extern lv_obj_t * ui_ScheduledScreen;
+            if (ui_ScheduledScreen) {
+                lv_disp_load_scr(ui_ScheduledScreen);
+                lv_event_send(ui_ScheduledScreen, LV_EVENT_SCREEN_LOADED, NULL);
+            }
+            lvgl_port_unlock();
+        }
+        
+        schedule_restore_pending = false;
+    }
+}
+
+void ui_start_schedule_brew(uint8_t hour, uint8_t minute, uint8_t target_temp) {
+    scheduled_target_temp = target_temp;
+    scheduled_hour = hour;
+    scheduled_minute = minute;
+    current_brew_state = BREW_STATE_SCHEDULED;
+    
+    // Get brewing temperature for current tea
+    uint8_t brewing_temp = settings_get_tea_temperature(current_tea_index);
+
+    // Send schedule to Controller
+    uart_comm_set_schedule(hour, minute, target_temp, brewing_temp);
+    
+    // Save schedule to NVS
+    settings_set_schedule(hour, minute, target_temp, current_tea_index);
+    
+    ESP_LOGI(TAG, "Schedule sent to Controller. Time: %02d:%02d, Target Temp: %d C, Brew Temp: %d C", 
+             hour, minute, target_temp, brewing_temp);
+}
+
+void ui_cancel_schedule_brew(void) {
+    if (current_brew_state == BREW_STATE_SCHEDULED) {
+        current_brew_state = BREW_STATE_IDLE;
+        uart_comm_cancel_schedule();
+        settings_clear_schedule();
+        ESP_LOGI(TAG, "Schedule cancelled.");
+    }
+}
+
 // Start the brewing state
 static void start_brewing_state(void)
 {
@@ -408,7 +497,7 @@ static void start_brewing_state(void)
     brewing_start_temp = 25.0f;
     brewing_start_time = 0;
     
-    // Get target temperature
+    // Get target temperature (always use the tea's configured temperature)
     brewing_target_temp = settings_get_tea_temperature(current_tea_index);
     
     ESP_LOGI(TAG, "Starting brew - target temp: %d °C", brewing_target_temp);
@@ -801,8 +890,32 @@ static void on_pot_presence_update(bool is_present, uint16_t distance_mm)
                 
                 if (lvgl_port_lock(100)) {
                     if (for_scheduler) {
-                        // Scheduler mode - go to ScheduledScreen
+                        // Scheduler mode - read rollers and start schedule
                         ESP_LOGI(TAG, "Starting scheduler...");
+                        
+                        // Read values from rollers
+                        // ui_Roller8: Hour (0-23)
+                        // ui_Roller7: Minute (0-59)
+                        // ui_Roller6: Temperature (25-100)
+                        
+                        uint16_t hour_idx = lv_roller_get_selected(ui_Roller8);
+                        uint16_t min_idx = lv_roller_get_selected(ui_Roller7);
+                        uint16_t temp_idx = lv_roller_get_selected(ui_Roller6);
+                        
+                        char buf[8];
+                        
+                        lv_roller_get_selected_str(ui_Roller8, buf, sizeof(buf));
+                        uint8_t hour = atoi(buf);
+                        
+                        lv_roller_get_selected_str(ui_Roller7, buf, sizeof(buf));
+                        uint8_t minute = atoi(buf);
+                        
+                        lv_roller_get_selected_str(ui_Roller6, buf, sizeof(buf));
+                        uint8_t temp = atoi(buf);
+                        
+                        // Start the schedule
+                        ui_start_schedule_brew(hour, minute, temp);
+                        
                         extern lv_obj_t * ui_ScheduledScreen;
                         if (ui_ScheduledScreen) {
                             _ui_screen_change(&ui_ScheduledScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_ScheduledScreen_screen_init);
@@ -1325,7 +1438,17 @@ void beginScheduler(lv_event_t * e)
 
 void stopScheduledBrew(lv_event_t * e)
 {
-    // Your code here
+    ESP_LOGI(TAG, "Stopping scheduled brew");
+    
+    // Cancel schedule on Controller and reset state
+    ui_cancel_schedule_brew();
+    settings_clear_schedule();
+    
+    // Navigate back to MainScreen
+    extern lv_obj_t * ui_MainScreen;
+    if (ui_MainScreen) {
+        _ui_screen_change(&ui_MainScreen, LV_SCR_LOAD_ANIM_NONE, 5, 0, &ui_MainScreen_screen_init);
+    }
 }
 
 void onMainScreen(lv_event_t * e)
@@ -1473,4 +1596,31 @@ void onSchedulerScreen(lv_event_t * e)
 void onScheduledScreen(lv_event_t * e)
 {
     ui_screen_state.current_screen = UI_SCREEN_SCHEDULED;
+    
+    // Ensure variables are synced with settings if they are zero (startup case)
+    if (scheduled_target_temp == 0 && scheduled_hour == 0 && scheduled_minute == 0) {
+        uint8_t h, m, t, ti;
+        if (settings_get_schedule(&h, &m, &t, &ti)) {
+            scheduled_hour = h;
+            scheduled_minute = m;
+            scheduled_target_temp = t;
+            current_tea_index = ti;
+        }
+    }
+    
+    // Update UI labels with scheduled values
+    extern lv_obj_t * ui_Label30; // Temperature label
+    extern lv_obj_t * ui_Label31; // Time label
+    
+    if (ui_Label30) {
+        char temp_str[16];
+        snprintf(temp_str, sizeof(temp_str), "%d °C", scheduled_target_temp);
+        lv_label_set_text(ui_Label30, temp_str);
+    }
+    
+    if (ui_Label31) {
+        char time_str[16];
+        snprintf(time_str, sizeof(time_str), "%02d:%02d", scheduled_hour, scheduled_minute);
+        lv_label_set_text(ui_Label31, time_str);
+    }
 }

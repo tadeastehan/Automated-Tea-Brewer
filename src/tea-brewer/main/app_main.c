@@ -223,6 +223,9 @@ static void on_motor_home_complete(bool success)
             ESP_LOGI(TAG, "Moving to idle position after homing: %d%%", idle_pos);
             vTaskDelay(pdMS_TO_TICKS(200));
             uart_comm_move_to_percent((float)idle_pos);
+            
+            /* Process any pending schedule */
+            ui_events_process_pending_schedule();
         }
     } else {
         ESP_LOGW(TAG, "Motor homing failed");
@@ -301,14 +304,14 @@ void app_main(void)
     knob_init(BSP_ENCODER_A, BSP_ENCODER_B);
     button_init(BSP_BTN_PRESS);
 
+    /* Initialize UI events (NVS save task and restore state) */
+    ui_events_init();
+
     /* Initialize LVGL UI */
     ESP_LOGI(TAG, "Display LVGL demo");
     lvgl_port_lock(0);
     ui_init();
     lvgl_port_unlock();
-
-    /* Initialize UI events (NVS save task) */
-    ui_events_init();
     
     /* Turn on backlight */
     gpio_set_level(BSP_LCD_BL, 0);
