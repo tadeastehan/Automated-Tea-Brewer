@@ -1,0 +1,332 @@
+/*
+ * SPDX-FileCopyrightText: 2023 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: CC0-1.0
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_system.h"
+#include "esp_spi_flash.h"
+#include "esp_heap_caps.h"
+#include "nvs_flash.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
+
+#include "settings.h"
+#include "bsp/esp-bsp.h"
+#include "esp_lvgl_port.h"
+#include "driver/i2c.h"
+#include "esp_lcd_touch_cst816s.h"
+
+#include "demos/lv_demos.h"
+#include "demos/keypad_encoder/lv_demo_keypad_encoder.h"
+#include "iot_knob.h"
+
+#include "uart_comm.h"
+#include "ui/ui.h"
+#include "ui/ui_events.h"
+
+static const char *TAG = "main";
+
+/* Startup sequence state */
+static bool startup_homing_triggered = false;
+static bool startup_sequence_complete = false;
+
+//NOTE: We currently have two versions of the 2.1 knob screen. If you have purchased the touch version, please set the macro definition below to 1
+
+#define MEMORY_MONITOR 0
+
+#if MEMORY_MONITOR
+
+#define ARRAY_SIZE_OFFSET   5   //Increase this if print_real_time_stats returns ESP_ERR_INVALID_SIZE
+
+/**
+ * @brief   Function to print the CPU usage of tasks over a given duration.
+ */
+static esp_err_t print_real_time_stats(TickType_t xTicksToWait)
+{
+    TaskStatus_t *start_array = NULL, *end_array = NULL;
+    UBaseType_t start_array_size, end_array_size;
+    uint32_t start_run_time, end_run_time;
+    esp_err_t ret;
+
+    //Allocate array to store current task states
+    start_array_size = uxTaskGetNumberOfTasks() + ARRAY_SIZE_OFFSET;
+    start_array = malloc(sizeof(TaskStatus_t) * start_array_size);
+    if (start_array == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto exit;
+    }
+    //Get current task states
+    start_array_size = uxTaskGetSystemState(start_array, start_array_size, &start_run_time);
+    if (start_array_size == 0) {
+        ret = ESP_ERR_INVALID_SIZE;
+        goto exit;
+    }
+
+    vTaskDelay(xTicksToWait);
+
+    //Allocate array to store tasks states post delay
+    end_array_size = uxTaskGetNumberOfTasks() + ARRAY_SIZE_OFFSET;
+    end_array = malloc(sizeof(TaskStatus_t) * end_array_size);
+    if (end_array == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto exit;
+    }
+    //Get post delay task states
+    end_array_size = uxTaskGetSystemState(end_array, end_array_size, &end_run_time);
+    if (end_array_size == 0) {
+        ret = ESP_ERR_INVALID_SIZE;
+        goto exit;
+    }
+
+    //Calculate total_elapsed_time in units of run time stats clock period.
+    uint32_t total_elapsed_time = (end_run_time - start_run_time);
+    if (total_elapsed_time == 0) {
+        ret = ESP_ERR_INVALID_STATE;
+        goto exit;
+    }
+
+    printf("| Task \t\t| Run Time \t| Percentage\n");
+    //Match each task in start_array to those in the end_array
+    for (int i = 0; i < start_array_size; i++) {
+        int k = -1;
+        for (int j = 0; j < end_array_size; j++) {
+            if (start_array[i].xHandle == end_array[j].xHandle) {
+                k = j;
+                //Mark that task have been matched by overwriting their handles
+                start_array[i].xHandle = NULL;
+                end_array[j].xHandle = NULL;
+                break;
+            }
+        }
+        //Check if matching task found
+        if (k >= 0) {
+            uint32_t task_elapsed_time = end_array[k].ulRunTimeCounter - start_array[i].ulRunTimeCounter;
+            uint32_t percentage_time = (task_elapsed_time * 100UL) / (total_elapsed_time * portNUM_PROCESSORS);
+            printf("| %s \t\t| %d \t| %d%%\n", start_array[i].pcTaskName, task_elapsed_time, percentage_time);
+        }
+    }
+
+    //Print unmatched tasks
+    for (int i = 0; i < start_array_size; i++) {
+        if (start_array[i].xHandle != NULL) {
+            printf("| %s | Deleted\n", start_array[i].pcTaskName);
+        }
+    }
+    for (int i = 0; i < end_array_size; i++) {
+        if (end_array[i].xHandle != NULL) {
+            printf("| %s | Created\n", end_array[i].pcTaskName);
+        }
+    }
+    ret = ESP_OK;
+
+exit:    //Common return path
+    free(start_array);
+    free(end_array);
+    return ret;
+}
+
+static void monitor_task(void *arg)
+{
+    (void) arg;
+    const int STATS_TICKS = pdMS_TO_TICKS(2 * 1000);
+
+    while (true) {
+        ESP_LOGI(TAG, "System Info Trace");
+        printf("\tDescription\tInternal\tSPIRAM\n");
+        printf("Current Free Memory\t%d\t\t%d\n",
+               heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
+               heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        printf("Largest Free Block\t%d\t\t%d\n",
+               heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
+               heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        printf("Min. Ever Free Size\t%d\t\t%d\n",
+               heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
+               heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+
+        printf("Getting real time stats over %d ticks\n", STATS_TICKS);
+        if (print_real_time_stats(STATS_TICKS) == ESP_OK) {
+            printf("Real time stats obtained\n");
+        } else {
+            printf("Error getting real time stats\n");
+        }
+
+        vTaskDelay(STATS_TICKS);
+    }
+
+    vTaskDelete(NULL);
+}
+
+static void sys_monitor_start(void)
+{
+    BaseType_t ret_val = xTaskCreatePinnedToCore(monitor_task, "Monitor Task", 4 * 1024, NULL, configMAX_PRIORITIES - 3, NULL, 0);
+    ESP_ERROR_CHECK_WITHOUT_ABORT((pdPASS == ret_val) ? ESP_OK : ESP_FAIL);
+}
+#endif
+
+/* ============================================
+   MOTOR COMMUNICATION CALLBACKS
+   ============================================ */
+
+/**
+ * @brief Callback when motor status is updated
+ */
+static void on_motor_status_update(const motor_status_t *status)
+{
+    ESP_LOGI(TAG, "Motor status: pos=%.1f%%, cal=%d, home=%d, connected=%d",
+             status->position_percent,
+             status->is_calibrated,
+             status->is_homed,
+             status->is_connected);
+    
+    /* Notify UI about status update */
+    ui_on_motor_status_update(status);
+    
+    /* Startup sequence: trigger homing when ESP #2 first connects */
+    if (!startup_homing_triggered && status->is_connected && status->is_calibrated) {
+        startup_homing_triggered = true;
+        ESP_LOGI(TAG, "ESP #2 connected - triggering homing sequence...");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        uart_comm_home();
+    }
+}
+
+/**
+ * @brief Callback when motor move is complete
+ */
+static void on_motor_move_complete(bool success)
+{
+    if (success) {
+        ESP_LOGI(TAG, "Motor move completed");
+    } else {
+        ESP_LOGW(TAG, "Motor move failed");
+    }
+}
+
+/**
+ * @brief Callback when motor homing is complete
+ */
+static void on_motor_home_complete(bool success)
+{
+    if (success) {
+        ESP_LOGI(TAG, "Motor homing completed");
+        
+        /* After startup homing, move to idle position */
+        if (!startup_sequence_complete) {
+            startup_sequence_complete = true;
+            int idle_pos = settings_get_idle_position();
+            ESP_LOGI(TAG, "Moving to idle position after homing: %d%%", idle_pos);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            uart_comm_move_to_percent((float)idle_pos);
+            
+            /* Process any pending schedule */
+            ui_events_process_pending_schedule();
+        }
+    } else {
+        ESP_LOGW(TAG, "Motor homing failed");
+    }
+    
+    /* Notify UI - this will trigger pending move if needed */
+    ui_on_home_complete(success);
+}
+
+/**
+ * @brief Callback when motor calibration is complete
+ */
+static void on_motor_calibrate_complete(bool success)
+{
+    if (success) {
+        ESP_LOGI(TAG, "Motor calibration completed");
+    } else {
+        ESP_LOGW(TAG, "Motor calibration failed");
+    }
+}
+
+/**
+ * @brief Callback when motor error occurs
+ */
+static void on_motor_error(uint8_t error_code)
+{
+    ESP_LOGE(TAG, "Motor error: %d", error_code);
+}
+
+/**
+ * @brief Initialize motor communication with ESP #2
+ */
+static void motor_comm_init(void)
+{
+    ESP_LOGI(TAG, "Initializing motor communication...");
+    
+    /* Initialize UART communication */
+    esp_err_t ret = uart_comm_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize motor communication: %s", esp_err_to_name(ret));
+        return;
+    }
+    
+    /* Register callbacks */
+    uart_comm_set_status_callback(on_motor_status_update);
+    uart_comm_set_move_complete_callback(on_motor_move_complete);
+    uart_comm_set_home_complete_callback(on_motor_home_complete);
+    uart_comm_set_calibrate_complete_callback(on_motor_calibrate_complete);
+    uart_comm_set_error_callback(on_motor_error);
+    
+    /* Start communication task */
+    uart_comm_start();
+    
+    ESP_LOGI(TAG, "Motor communication initialized");
+}
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "Compile time: %s %s", __DATE__, __TIME__);
+    
+    /* Initialize NVS. */
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+    ESP_ERROR_CHECK(settings_read_parameter_from_nvs());
+    
+    /* Initialize display and touch */
+    app_lcd_init();
+    app_touch_init();
+    lvgl_port_display_init();
+
+    /* Initialize input devices */
+    knob_init(BSP_ENCODER_A, BSP_ENCODER_B);
+    button_init(BSP_BTN_PRESS);
+
+    /* Initialize UI events (NVS save task and restore state) */
+    ui_events_init();
+
+    /* Initialize LVGL UI */
+    ESP_LOGI(TAG, "Display LVGL demo");
+    lvgl_port_lock(0);
+    ui_init();
+    lvgl_port_unlock();
+    
+    /* Turn on backlight */
+    gpio_set_level(BSP_LCD_BL, 0);
+
+    /* Wait for display to stabilize */
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    /* Initialize motor communication with ESP #2 (Motor Controller) */
+    motor_comm_init();
+    
+    /* Motor initialization will happen automatically when first ping is received */
+
+#if MEMORY_MONITOR
+    sys_monitor_start();
+#endif
+
+    ESP_LOGI(TAG, "Application started successfully");
+}

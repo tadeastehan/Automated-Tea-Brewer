@@ -1,0 +1,23 @@
+idf_component_register(
+    SRCS 
+        "main.c"
+        "scheduler.c"
+        "motor/tmc2130.c"
+        "motor/motor_control.c"
+        "console/console.c"
+        "console/uart_comm.c"
+        "protocol/protocol.c"
+        "temperature_sensor/thermometer.c"
+        "distance_sensor/distance_sensor.c"
+        "pot_sensor/pot_sensor.c"
+        "rtc/rtc.c"
+    INCLUDE_DIRS 
+        "."
+        "motor"
+        "console"
+        "protocol"
+        "temperature_sensor"
+        "distance_sensor"
+        "pot_sensor"
+        "rtc"
+)
