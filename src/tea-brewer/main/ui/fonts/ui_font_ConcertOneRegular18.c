@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 18 px
  * Bpp: 4
- * Opts: --bpp 4 --size 18 --font C:/Users/Acer/SquareLine/assets/ConcertOne-Regular.ttf -o C:/Users/Acer/SquareLine/assets\ui_font_ConcertOneRegular18.c --format lvgl -r 0x20-0x7f --no-compress --no-prefilter
+ * Opts: --bpp 4 --size 18 --font C:/Users/%USERNAME%/SquareLine/assets/ConcertOne-Regular.ttf -o C:/Users/%USERNAME%/SquareLine/assets\ui_font_ConcertOneRegular18.c --format lvgl -r 0x20-0x7f --no-compress --no-prefilter
  ******************************************************************************/
 
 #include "../ui.h"

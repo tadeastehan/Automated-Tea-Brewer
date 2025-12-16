@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🍵 Automated Tea Brewer
+# Automated Tea Brewer
 
 ### Design and Implementation of a Fully Automated ESP32-Based Tea Brewer
 
@@ -10,13 +10,13 @@
 
 `ESP32` · `Embedded Systems` · `C` · `FreeRTOS` · `LVGL` · `TMC2130` · `Stepper Motor` · `IoT`
 
-[Repository](https://github.com/tadeastehan/Automated-Tea-Brewer) · [Documentation](#-documentation) · [Getting Started](#-project-structure)
+[Repository](https://github.com/tadeastehan/Automated-Tea-Brewer) · [Documentation](#documentation) · [Getting Started](#project-structure)
 
 </div>
 
 ---
 
-## 📋 Project Annotation
+## Project Annotation
 
 This project presents the design and implementation of a **fully automated tea brewing system** based on ESP32 microcontrollers. The system consists of two ESP32 modules working in tandem:
 
@@ -25,35 +25,36 @@ This project presents the design and implementation of a **fully automated tea b
 | **Display Controller** | ESP32-S3        | Touchscreen UI using LVGL graphics library |
 | **Motor Controller**   | ESP32-C6        | Stepper motor control via TMC2130 driver   |
 
-### ✨ Key Features
+### Key Features
 
-- 🌡️ **IR Thermometer** - Precise water temperature monitoring
-- 📏 **Laser Distance Sensor** - Teapot presence detection (VL53L0X)
-- 🔥 **Induction Cooker Interface** - Automated heating control via optocoupler
-- ⚙️ **Stepper Motor Control** - Precise tea bag immersion with TMC2130
-- 📱 **Touchscreen Interface** - Intuitive LVGL-based user interface
-- ⏱️ **Programmable Brewing** - Configurable temperature, steeping time, and movement
+- **IR Thermometer** - Precise water temperature monitoring
+- **Laser Distance Sensor** - Teapot presence detection (VL53L0X)
+- **Induction Cooker Interface** - Automated heating control via optocoupler
+- **Stepper Motor Control** - Precise tea bag immersion with TMC2130
+- **Touchscreen Interface** - Intuitive LVGL-based user interface
+- **Programmable Brewing** - Configurable temperature, steeping time, and movement
 
 > The goal was to create a fully autonomous tea brewing appliance that can prepare tea with consistent quality by precisely controlling brewing temperature, steeping time, and tea bag movement.
 
 ---
 
-## 📄 Documents
+## Documents
 
-| Document                | Path |
-| ----------------------- | ---- |
-| 📝 Paper                | ``   |
-| 🖼️ Images & Screenshots | ``   |
-| 💭 Reflection           | ``   |
+| Document             | Path                         |
+| -------------------- | ---------------------------- |
+| Paper                | ``                           |
+| Images & Screenshots | ``                           |
+| UI Documentation     | [src/ui/UI.md](src/ui/UI.md) |
+| Reflection           | ``                           |
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Automated-Tea-Brewer/
-├── 📂 src/                          # Source code
-│   ├── 📂 tea-brewer/               # ESP32-S3 Display Controller
+├── src/                          # Source code
+│   ├── tea-brewer/               # ESP32-S3 Display Controller
 │   │   ├── main/
 │   │   │   ├── app_main.c           # Application entry point
 │   │   │   ├── uart_comm.c/h        # UART communication
@@ -64,7 +65,7 @@ Automated-Tea-Brewer/
 │   │   │   └── esp_lcd_touch_cst816s/
 │   │   └── managed_components/      # ESP-IDF dependencies
 │   │
-│   └── 📂 tea-brewer-controller/    # ESP32-C6 Motor Controller
+│   └── tea-brewer-controller/    # ESP32-C6 Motor Controller
 │       ├── main/
 │       │   ├── main.c               # Application entry point
 │       │   ├── motor/               # TMC2130 stepper control
@@ -78,11 +79,11 @@ Automated-Tea-Brewer/
 │       └── components/
 │           └── vl53l0x/             # Distance sensor driver
 │
-├── 📂 docs/                         # Documentation
+├── docs/                         # Documentation
 │   ├── induction-cooker/            # Induction cooker mod guide
 │   └── stepper-motor-driver/        # TMC2130 wiring diagrams
 │
-└── 📂 reports/                      # Data & Analysis
+└── reports/                      # Data & Analysis
     ├── heat-dissipation/            # Heat dissipation analysis
     │   ├── graph_maker.py
     │   ├── data/
@@ -95,7 +96,7 @@ Automated-Tea-Brewer/
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 Hardware setup guides are available in the `docs/` folder:
 
@@ -103,9 +104,3 @@ Hardware setup guides are available in the `docs/` folder:
 - **[TMC2130 Stepper Driver](docs/stepper-motor-driver/TMC2130.md)** - SPI configuration and wiring diagrams
 
 ---
-
-<div align="center">
-
-Made with ☕ and ❤️
-
-</div>
