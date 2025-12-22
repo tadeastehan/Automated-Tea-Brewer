@@ -24,6 +24,16 @@ static double calculate_cooling_time_hours(double temp) {
     return -log((temp - 26.9379) / 67.5826) / 0.6109;
 }
 
+// Helper function to calculate brewing time to reach a specific temperature
+// t(T) = -ln(1 - (T - 16.8791) / 377.4376) / 0.000259 (seconds)
+// Fitted from experimental heating curve data
+static uint32_t calculate_brewing_time_sec(double temp) {
+    if (temp <= 16.88) return 0; // Below starting temperature
+    double arg = 1.0 - (temp - 16.8791) / 377.4376;
+    if (arg <= 0) return 16 * 60; // Cap at 16 minutes if beyond model range
+    return (uint32_t)(-log(arg) / 0.000259);
+}
+
 static void scheduler_check_callback(TimerHandle_t xTimer) {
     if (!is_active) return;
 
@@ -35,8 +45,8 @@ static void scheduler_check_callback(TimerHandle_t xTimer) {
     
     time_t now = mktime(&timeinfo);
     
-    // 1. Fixed brewing time (15 minutes)
-    uint32_t brewing_time_sec = 15 * 60; // TODO: Measure brewing curve for more accuracy
+    // 1. Calculate brewing time based on brewing temperature
+    uint32_t brewing_time_sec = calculate_brewing_time_sec((double)scheduled_brewing_temp);
     
     // 2. Calculate cooling time
     // Time to cool from Brewing Temp -> Target Temp
@@ -112,7 +122,7 @@ void scheduler_set(uint8_t hour, uint8_t minute, uint8_t target_temp, uint8_t br
     is_active = true;
     
     // Calculate lead time for logging
-    uint32_t brewing_time_sec = 15 * 60;
+    uint32_t brewing_time_sec = calculate_brewing_time_sec((double)brewing_temp);
     double t_target = calculate_cooling_time_hours((double)target_temp);
     double t_brew = calculate_cooling_time_hours((double)brewing_temp);
     double cooling_time_hours = t_target - t_brew;
@@ -173,7 +183,7 @@ void scheduler_get_status(uint32_t *target_time, uint32_t *remaining_sec) {
             time_t now = mktime(&timeinfo);
             
             // Calculate lead time again
-            uint32_t brewing_time_sec = 15 * 60;
+            uint32_t brewing_time_sec = calculate_brewing_time_sec((double)scheduled_brewing_temp);
             double t_target = calculate_cooling_time_hours((double)scheduled_target_temp);
             double t_brew = calculate_cooling_time_hours((double)scheduled_brewing_temp);
             double cooling_time_hours = t_target - t_brew;
