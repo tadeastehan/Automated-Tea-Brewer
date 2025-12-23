@@ -5,4 +5,13 @@ idf_component_register(SRC_DIRS
                     "ui/screens"
                     "ui"
                     INCLUDE_DIRS
-                    ".")
+                    "."
+                    REQUIRES
+                    bsp
+                    espressif__esp_lcd_touch_cst816s
+                    nvs_flash
+                    esp_http_server
+                    json
+                    driver
+                    freertos
+                    esp_common)
