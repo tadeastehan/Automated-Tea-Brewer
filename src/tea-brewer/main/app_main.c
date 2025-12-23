@@ -29,8 +29,11 @@
 #include "uart_comm.h"
 #include "ui/ui.h"
 #include "ui/ui_events.h"
+#include "webserver.h"
 
 static const char *TAG = "main";
+
+#define DEVICE_NAME "TeaBrewer"
 
 /* Startup sequence state */
 static bool startup_homing_triggered = false;
@@ -282,6 +285,11 @@ static void motor_comm_init(void)
     ESP_LOGI(TAG, "Motor communication initialized");
 }
 
+void on_wifi_ready() {
+        ESP_LOGI(TAG, "WiFi ready");
+        webserver_init();
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "Compile time: %s %s", __DATE__, __TIME__);
@@ -327,6 +335,8 @@ void app_main(void)
 #if MEMORY_MONITOR
     sys_monitor_start();
 #endif
+
+    wifi_config_init(DEVICE_NAME, NULL, on_wifi_ready);
 
     ESP_LOGI(TAG, "Application started successfully");
 }

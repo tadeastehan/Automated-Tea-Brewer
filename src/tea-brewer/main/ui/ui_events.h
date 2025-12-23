@@ -13,6 +13,15 @@ extern "C" {
 // Debug mode flag - set to 0 for production builds
 #define DEBUG_ENABLED 0
 
+// Brew state enum (for webserver)
+typedef enum {
+    WEB_BREW_STATE_IDLE = 0,
+    WEB_BREW_STATE_BREWING,
+    WEB_BREW_STATE_INFUSING,
+    WEB_BREW_STATE_TEABAG_DROPOFF,
+    WEB_BREW_STATE_SCHEDULED
+} web_brew_state_t;
+
 // Global tea index for navigation
 extern uint8_t current_tea_index;
 
@@ -30,6 +39,12 @@ void ui_cancel_schedule_brew(void);
 
 // Startup motor initialization - home and move to idle position
 void ui_startup_motor_init(void);
+
+// Get current brew state (for webserver)
+web_brew_state_t ui_get_brew_state(void);
+
+// Get brew progress (0-100)
+uint8_t ui_get_brew_progress(void);
 
 void onMainScreen(lv_event_t * e);
 void nextTeaScreen(lv_event_t * e);
