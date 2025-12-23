@@ -1624,3 +1624,34 @@ void onScheduledScreen(lv_event_t * e)
         lv_label_set_text(ui_Label31, time_str);
     }
 }
+
+/* ============================================
+   WEBSERVER API FUNCTIONS
+   ============================================ */
+
+web_brew_state_t ui_get_brew_state(void)
+{
+    return (web_brew_state_t)current_brew_state;
+}
+
+uint8_t ui_get_brew_progress(void)
+{
+    if (current_brew_state == BREW_STATE_BREWING) {
+        /* Calculate temperature progress */
+        float temp_range = (float)brewing_target_temp - brewing_start_temp;
+        if (temp_range > 0.0f) {
+            float progress = (last_temp_reading - brewing_start_temp) / temp_range * 100.0f;
+            if (progress < 0.0f) return 0;
+            if (progress > 100.0f) return 100;
+            return (uint8_t)progress;
+        }
+    } else if (current_brew_state == BREW_STATE_INFUSING) {
+        /* Calculate infusion time progress */
+        if (infusion_target_seconds > 0) {
+            uint32_t progress = (infusion_elapsed_seconds * 100) / infusion_target_seconds;
+            if (progress > 100) return 100;
+            return (uint8_t)progress;
+        }
+    }
+    return 0;
+}
