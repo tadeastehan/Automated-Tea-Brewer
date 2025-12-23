@@ -32,6 +32,7 @@ This project presents the design and implementation of a **fully automated tea b
 - **Induction Cooker Interface** - Automated heating control via optocoupler
 - **Stepper Motor Control** - Precise tea bag immersion with TMC2130
 - **Touchscreen Interface** - Intuitive LVGL-based user interface
+- **Web Dashboard** - Remote control via WiFi with mDNS support (teabrewer.local)
 - **Programmable Brewing** - Configurable temperature, steeping time, and movement
 
 > The goal was to create a fully autonomous tea brewing appliance that can prepare tea with consistent quality by precisely controlling brewing temperature, steeping time, and tea bag movement.
@@ -40,12 +41,13 @@ This project presents the design and implementation of a **fully automated tea b
 
 ## Documents
 
-| Document             | Path                         |
-| -------------------- | ---------------------------- |
-| Paper                | ``                           |
-| Images & Screenshots | ``                           |
-| UI Documentation     | [src/ui/UI.md](src/ui/UI.md) |
-| Reflection           | ``                           |
+| Document             | Path                                                                       |
+| -------------------- | -------------------------------------------------------------------------- |
+| Paper                | ``                                                                         |
+| Images & Screenshots | ``                                                                         |
+| UI Documentation     | [src/ui/UI.md](src/ui/UI.md)                                               |
+| Web Dashboard        | [docs/web-dashboard/web_dashboard.md](docs/web-dashboard/web_dashboard.md) |
+| Reflection           | ``                                                                         |
 
 ---
 
@@ -59,6 +61,7 @@ Automated-Tea-Brewer/
 │   │   │   ├── app_main.c           # Application entry point
 │   │   │   ├── uart_comm.c/h        # UART communication
 │   │   │   ├── settings.c/h         # User settings management
+│   │   │   ├── webserver.c/h        # Web dashboard server
 │   │   │   └── ui/                  # LVGL user interface
 │   │   ├── components/
 │   │   │   ├── bsp/                 # Board Support Package
@@ -80,10 +83,16 @@ Automated-Tea-Brewer/
 │           └── vl53l0x/             # Distance sensor driver
 │
 ├── docs/                         # Documentation
+│   ├── electronics/                 # Electronics documentation
 │   ├── induction-cooker/            # Induction cooker mod guide
-│   └── stepper-motor-driver/        # TMC2130 wiring diagrams
+│   ├── stepper-motor-driver/        # TMC2130 wiring diagrams
+│   └── web-dashboard/               # Web dashboard documentation
 │
 └── reports/                      # Data & Analysis
+    ├── brew-time/                   # Brew time analysis
+    │   ├── graph_maker.py
+    │   ├── data/
+    │   └── graphs/
     ├── heat-dissipation/            # Heat dissipation analysis
     │   ├── graph_maker.py
     │   ├── data/
@@ -102,5 +111,6 @@ Hardware setup guides are available in the `docs/` folder:
 
 - **[Induction Cooker Modification](docs/induction-cooker/induction_cooker.md)** - Optocoupler wiring and connector setup
 - **[TMC2130 Stepper Driver](docs/stepper-motor-driver/TMC2130.md)** - SPI configuration and wiring diagrams
+- **[Web Dashboard](docs/web-dashboard/web_dashboard.md)** - Remote control interface and API reference
 
 ---
