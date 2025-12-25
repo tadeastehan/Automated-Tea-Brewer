@@ -44,10 +44,7 @@ This project presents the design and implementation of a **fully automated tea b
 | Document             | Path                                                                       |
 | -------------------- | -------------------------------------------------------------------------- |
 | Paper                | ``                                                                         |
-| Images & Screenshots | ``                                                                         |
-| UI Documentation     | [src/ui/UI.md](src/ui/UI.md)                                               |
-| Web Dashboard        | [docs/web-dashboard/web_dashboard.md](docs/web-dashboard/web_dashboard.md) |
-| Reflection           | ``                                                                         |
+| Images & Screenshots | ``                                                            
 
 ---
 
@@ -88,6 +85,8 @@ Automated-Tea-Brewer/
 │   ├── stepper-motor-driver/        # TMC2130 wiring diagrams
 │   └── web-dashboard/               # Web dashboard documentation
 │
+├── models/                       # 3D Models
+│
 └── reports/                      # Data & Analysis
     ├── brew-time/                   # Brew time analysis
     │   ├── graph_maker.py
@@ -112,5 +111,5 @@ Hardware setup guides are available in the `docs/` folder:
 - **[Induction Cooker Modification](docs/induction-cooker/induction_cooker.md)** - Optocoupler wiring and connector setup
 - **[TMC2130 Stepper Driver](docs/stepper-motor-driver/TMC2130.md)** - SPI configuration and wiring diagrams
 - **[Web Dashboard](docs/web-dashboard/web_dashboard.md)** - Remote control interface and API reference
-
+- **[UI Documentation](src/ui/UI.md)** - LVGL UI structure and customization
 ---
