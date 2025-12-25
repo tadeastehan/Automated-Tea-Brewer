@@ -1,0 +1,3 @@
+[submodule "src/tea-brewer/components/esp32-wifi-bootstrap"]
+	path = src/tea-brewer/components/esp32-wifi-bootstrap
+	url = https://github.com/AchimPieters/esp32-wifi-bootstrap.git
