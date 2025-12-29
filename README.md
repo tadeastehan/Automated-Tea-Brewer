@@ -41,10 +41,10 @@ This project presents the design and implementation of a **fully automated tea b
 
 ## Documents
 
-| Document             | Path                                                                       |
-| -------------------- | -------------------------------------------------------------------------- |
-| Paper                | ``                                                                         |
-| Images & Screenshots | ``                                                            
+| Document             | Path                        |
+| -------------------- | --------------------------- |
+| Paper                | ``                          |
+| Images & Screenshots | [View Images](docs/images/) |
 
 ---
 
@@ -112,4 +112,5 @@ Hardware setup guides are available in the `docs/` folder:
 - **[TMC2130 Stepper Driver](docs/stepper-motor-driver/TMC2130.md)** - SPI configuration and wiring diagrams
 - **[Web Dashboard](docs/web-dashboard/web_dashboard.md)** - Remote control interface and API reference
 - **[UI Documentation](src/ui/UI.md)** - LVGL UI structure and customization
+
 ---
