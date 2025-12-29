@@ -81,6 +81,7 @@ Automated-Tea-Brewer/
 │
 ├── docs/                         # Documentation
 │   ├── electronics/                 # Electronics documentation
+│   ├── images/                      # Project images & photos
 │   ├── induction-cooker/            # Induction cooker mod guide
 │   ├── stepper-motor-driver/        # TMC2130 wiring diagrams
 │   └── web-dashboard/               # Web dashboard documentation
