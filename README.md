@@ -43,7 +43,7 @@ This project presents the design and implementation of a **fully automated tea b
 
 | Document             | Path                        |
 | -------------------- | --------------------------- |
-| Paper                | ``                          |
+| Paper                | [View Paper](docs/paper/Design_and_Implementation_of_a_Fully_Automated_ESP32_Based_Tea_Brewer___Tadeáš_Těhan%20(3).pdf)                          |
 | Images & Screenshots | [View Images](docs/images/) |
 
 ---
