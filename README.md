@@ -16,6 +16,11 @@
 
 ---
 
+<p align="center">
+  <img src="docs/images/AutomatedTeaBrewer.gif" alt="Automated Tea Brewer Animation" height="420" />
+  <img src="docs/images/front-close.jpeg" alt="Automated Tea Brewer Front View" height="420" />
+</p>
+
 ## Project Annotation
 
 This project presents the design and implementation of a **fully automated tea brewing system** based on ESP32 microcontrollers. The system consists of two ESP32 modules working in tandem:
