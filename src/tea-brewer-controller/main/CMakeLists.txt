@@ -20,4 +20,10 @@ idf_component_register(
         "distance_sensor"
         "pot_sensor"
         "rtc"
+    REQUIRES
+        driver
+        esp_timer
+        nvs_flash
+        esp_rom
+        soc
 )
