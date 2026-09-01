@@ -36,7 +36,7 @@
 
 static const char *TAG = "MAIN";
 
-#define DEBUG 1  // Set to 1 to enable distance sensor debug output
+#define DEBUG 0  // Set to 0 to prevent console spamming
 
 /**
  * @brief Initialize NVS flash storage

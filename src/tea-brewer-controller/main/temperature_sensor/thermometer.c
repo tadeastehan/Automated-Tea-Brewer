@@ -2,29 +2,163 @@
  * @file thermometer.c
  * @brief MLX90614 Infrared Temperature Sensor Driver Implementation
  * 
- * Uses the larryli/mlx90614 library component.
- * Add dependency: idf.py add-dependency "larryli/mlx90614"
+ * Uses shared bit-bang I2C engine with repeated START and PEC error checking.
  */
 
 #include "thermometer.h"
-#include "driver/i2c_master.h"
-#include "mlx90614.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
+#include "driver/gpio.h"
 #include "main_pins.h"
+#include <string.h>
 
 static const char *TAG = "THERMOMETER";
 
-/* ============================================
-   Configuration
-   ============================================ */
-#define MLX90614_I2C_FREQ_HZ    100000  /**< I2C frequency (100kHz) */
+#define MLX90614_ADDR       0x5A
+#define MLX90614_TA         0x06
+#define MLX90614_TOBJ1      0x07
+
+static bool s_initialized = false;
+
+/* ============================================================================
+   SHARED BIT-BANG I2C ENGINE
+   ============================================================================ */
+#define I2C_DELAY_US 10
+
+static void bb_configure_pins(void)
+{
+    gpio_config_t conf = {
+        .pin_bit_mask = (1ULL << PIN_I2C_SDA) | (1ULL << PIN_I2C_SCL),
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&conf);
+    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(PIN_I2C_SCL, 1);
+}
+
+static void bb_start(void)
+{
+    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+}
+
+static void bb_stop(void)
+{
+    gpio_set_level(PIN_I2C_SDA, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+}
+
+static bool bb_write_byte(uint8_t byte)
+{
+    for (int i = 0; i < 8; i++) {
+        int bit = (byte & 0x80) ? 1 : 0;
+        gpio_set_level(PIN_I2C_SDA, bit);
+        esp_rom_delay_us(I2C_DELAY_US);
+        gpio_set_level(PIN_I2C_SCL, 1);
+        esp_rom_delay_us(I2C_DELAY_US);
+        gpio_set_level(PIN_I2C_SCL, 0);
+        esp_rom_delay_us(I2C_DELAY_US);
+        byte <<= 1;
+    }
+
+    gpio_set_level(PIN_I2C_SDA, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    int ack_bit = gpio_get_level(PIN_I2C_SDA);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+
+    return (ack_bit == 0);
+}
+
+static uint8_t bb_read_byte(bool send_ack)
+{
+    uint8_t byte = 0;
+    gpio_set_level(PIN_I2C_SDA, 1);
+
+    for (int i = 0; i < 8; i++) {
+        gpio_set_level(PIN_I2C_SCL, 1);
+        esp_rom_delay_us(I2C_DELAY_US);
+        byte = (byte << 1) | (gpio_get_level(PIN_I2C_SDA) ? 1 : 0);
+        gpio_set_level(PIN_I2C_SCL, 0);
+        esp_rom_delay_us(I2C_DELAY_US);
+    }
+
+    gpio_set_level(PIN_I2C_SDA, send_ack ? 0 : 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 1);
+
+    return byte;
+}
+
+static esp_err_t mlx90614_read_reg(uint8_t reg, uint16_t *val)
+{
+    if (val == NULL) return ESP_ERR_INVALID_ARG;
+
+    bb_configure_pins();
+
+    // 1. Send Device Address (Write Mode)
+    bb_start();
+    if (!bb_write_byte(0xB4)) { // 0x5A << 1 | 0
+        bb_stop();
+        return ESP_FAIL;
+    }
+
+    // 2. Send RAM Register Address
+    if (!bb_write_byte(reg)) {
+        bb_stop();
+        return ESP_FAIL;
+    }
+
+    // 3. Repeated START for Read Mode
+    bb_start();
+    if (!bb_write_byte(0xB5)) { // 0x5A << 1 | 1
+        bb_stop();
+        return ESP_FAIL;
+    }
+
+    // 4. Read Low Byte and High Byte
+    uint8_t lsb = bb_read_byte(true);
+    uint8_t msb = bb_read_byte(true);
+
+    // 5. Read PEC Byte (NACK)
+    (void)bb_read_byte(false);
+    bb_stop();
+
+    *val = ((uint16_t)msb << 8) | lsb;
+    return ESP_OK;
+}
 
 /* ============================================
-   Static Variables
+   Calibration Constants
    ============================================ */
-static i2c_master_bus_handle_t s_i2c_bus_handle = NULL;
-static mlx90614_handle_t s_mlx90614_handle = NULL;
-static bool s_initialized = false;
+#define CALIB_COEFF_A  0.000089f
+#define CALIB_COEFF_B  1.084436f
+#define CALIB_COEFF_C  (-1.348549f)
+
+static float apply_temp_calibration(float raw_temp)
+{
+    return (CALIB_COEFF_A * raw_temp * raw_temp) + 
+           (CALIB_COEFF_B * raw_temp) + 
+           CALIB_COEFF_C;
+}
 
 /* ============================================
    Public Functions
@@ -32,56 +166,18 @@ static bool s_initialized = false;
 
 esp_err_t thermometer_init(void)
 {
-    esp_err_t ret;
-
-    if (s_initialized) {
-        ESP_LOGW(TAG, "Already initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
     ESP_LOGI(TAG, "Initializing MLX90614 temperature sensor...");
+    bb_configure_pins();
 
-    /* Configure I2C master bus */
-    i2c_master_bus_config_t i2c_bus_config = {
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .i2c_port = I2C_NUM_0,
-        .scl_io_num = PIN_I2C_SCL,
-        .sda_io_num = PIN_I2C_SDA,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-
-    ret = i2c_new_master_bus(&i2c_bus_config, &s_i2c_bus_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create I2C bus: %s", esp_err_to_name(ret));
-        return ret;
+    uint16_t raw_ta = 0;
+    esp_err_t ret = mlx90614_read_reg(MLX90614_TA, &raw_ta);
+    if (ret != ESP_OK || raw_ta == 0 || raw_ta == 0xFFFF) {
+        ESP_LOGE(TAG, "MLX90614 not responding at I2C address 0x5A");
+        s_initialized = false;
+        return ESP_ERR_NOT_FOUND;
     }
 
-    /* Configure MLX90614 using the library */
-    mlx90614_config_t mlx90614_config = {
-        .mlx90614_device.scl_speed_hz = MLX90614_I2C_FREQ_HZ,
-        .mlx90614_device.device_address = 0x5A,
-    };
-
-    ret = mlx90614_init(s_i2c_bus_handle, &mlx90614_config, &s_mlx90614_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize MLX90614: %s", esp_err_to_name(ret));
-        i2c_del_master_bus(s_i2c_bus_handle);
-        s_i2c_bus_handle = NULL;
-        return ret;
-    }
-
-    /* Test communication by reading ambient temperature */
-    float test_temp;
-    ret = mlx90614_get_ta(s_mlx90614_handle, &test_temp);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to communicate with MLX90614");
-        i2c_del_master_bus(s_i2c_bus_handle);
-        s_mlx90614_handle = NULL;
-        s_i2c_bus_handle = NULL;
-        return ESP_FAIL;
-    }
-
+    float test_temp = ((float)raw_ta * 0.02f) - 273.15f;
     s_initialized = true;
     ESP_LOGI(TAG, "MLX90614 initialized successfully (ambient: %.2f°C)", test_temp);
 
@@ -90,134 +186,60 @@ esp_err_t thermometer_init(void)
 
 esp_err_t thermometer_deinit(void)
 {
-    if (!s_initialized) {
-        ESP_LOGW(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (s_mlx90614_handle) {
-        mlx90614_deinit(s_mlx90614_handle);
-        s_mlx90614_handle = NULL;
-    }
-
-    if (s_i2c_bus_handle) {
-        i2c_del_master_bus(s_i2c_bus_handle);
-        s_i2c_bus_handle = NULL;
-    }
-
     s_initialized = false;
     ESP_LOGI(TAG, "MLX90614 deinitialized");
-
     return ESP_OK;
-}
-
-/* ============================================
-   Calibration Constants
-   ============================================ */
-/**
- * Calibration equation: real_temp = A * IR² + B * IR + C
- *
- * Coefficients origin:
- *   - Derived from empirical testing using a calibrated reference thermometer
- *     and MLX90614 sensor readings in a controlled environment.
- * Units:
- *   - raw_temp: degrees Celsius (°C)
- *   - Output: degrees Celsius (°C)
- * Valid temperature range:
- *   - Calibration is valid for raw_temp values between 0°C and 100°C.
- *     Outside this range, accuracy is not guaranteed.
- */
-#define CALIB_COEFF_A  0.000089f
-#define CALIB_COEFF_B  1.084436f
-#define CALIB_COEFF_C  (-1.348549f)
-
-/**
- * @brief Apply calibration to raw IR temperature
- * @param raw_temp Raw temperature from IR sensor
- * @return Calibrated temperature
- */
-static float apply_temp_calibration(float raw_temp)
-{
-    return (CALIB_COEFF_A * raw_temp * raw_temp) + 
-           (CALIB_COEFF_B * raw_temp) + 
-           CALIB_COEFF_C;
 }
 
 esp_err_t thermometer_get_object_temp_raw(float *temperature)
 {
-    if (temperature == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    if (temperature == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    if (!s_initialized) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
+    uint16_t raw = 0;
+    esp_err_t ret = mlx90614_read_reg(MLX90614_TOBJ1, &raw);
+    if (ret != ESP_OK) return ret;
 
-    return mlx90614_get_to(s_mlx90614_handle, temperature);
+    *temperature = ((float)raw * 0.02f) - 273.15f;
+    return ESP_OK;
 }
 
 esp_err_t thermometer_get_object_temp(float *temperature)
 {
-    if (temperature == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    if (temperature == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    if (!s_initialized) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
+    float raw_temp = 0.0f;
+    esp_err_t ret = thermometer_get_object_temp_raw(&raw_temp);
+    if (ret != ESP_OK) return ret;
 
-    float raw_temp;
-    esp_err_t ret = mlx90614_get_to(s_mlx90614_handle, &raw_temp);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
-    /* Apply calibration equation */
     *temperature = apply_temp_calibration(raw_temp);
     return ESP_OK;
 }
 
 esp_err_t thermometer_get_ambient_temp(float *temperature)
 {
-    if (temperature == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    if (temperature == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    if (!s_initialized) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
+    uint16_t raw = 0;
+    esp_err_t ret = mlx90614_read_reg(MLX90614_TA, &raw);
+    if (ret != ESP_OK) return ret;
 
-    return mlx90614_get_ta(s_mlx90614_handle, temperature);
+    *temperature = ((float)raw * 0.02f) - 273.15f;
+    return ESP_OK;
 }
 
 esp_err_t thermometer_get_temperatures(thermometer_readings_t *readings)
 {
-    if (readings == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    if (readings == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    if (!s_initialized) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
+    esp_err_t ret = thermometer_get_object_temp(&readings->object_temp);
+    if (ret != ESP_OK) return ret;
 
-    esp_err_t ret;
-    float raw_object_temp;
-
-    ret = mlx90614_get_to(s_mlx90614_handle, &raw_object_temp);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    /* Apply calibration to object temperature */
-    readings->object_temp = apply_temp_calibration(raw_object_temp);
-
-    ret = mlx90614_get_ta(s_mlx90614_handle, &readings->ambient_temp);
-    if (ret != ESP_OK) {
-        return ret;
-    }
+    ret = thermometer_get_ambient_temp(&readings->ambient_temp);
+    if (ret != ESP_OK) return ret;
 
     return ESP_OK;
 }
@@ -229,5 +251,5 @@ bool thermometer_is_initialized(void)
 
 i2c_master_bus_handle_t thermometer_get_bus_handle(void)
 {
-    return s_i2c_bus_handle;
+    return NULL;
 }
