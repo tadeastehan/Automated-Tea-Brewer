@@ -9,17 +9,18 @@
 /* ============================================
    TMC2130 STEPPER DRIVER PINS
    ============================================ */
-#define PIN_MOTOR_EN        2
-#define PIN_MOTOR_DIR       0
-#define PIN_MOTOR_STEP      1
-#define PIN_MOTOR_CS        21
+                           // M1   M2
+#define PIN_MOTOR_EN        18 // 2
+#define PIN_MOTOR_DIR       19 // 6
+#define PIN_MOTOR_STEP      20 // 7
+#define PIN_MOTOR_CS        21 // 11 
 
 /* ============================================
    SPI PINS (for TMC2130)
    ============================================ */
-#define PIN_SPI_SCLK        19
-#define PIN_SPI_MOSI        18
-#define PIN_SPI_MISO        20
+#define PIN_SPI_SCLK        10
+#define PIN_SPI_MOSI        1
+#define PIN_SPI_MISO        0
 
 /* ============================================
    UART0 PINS (ESP-to-ESP communication)
@@ -36,6 +37,6 @@
 /* ============================================
    INDUCTION COOKER CONTROL PIN
    ============================================ */
-#define PIN_INDUCTION       4  // HIGH = ON, LOW = OFF
+#define PIN_INDUCTION       3  // HIGH = ON, LOW = OFF
 
 #endif // PINS_H
