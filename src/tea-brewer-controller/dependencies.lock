@@ -2,7 +2,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.3.4
+    version: 5.5.1
   larryli/mlx90614:
     component_hash: 4a99807576ef39b9fdbf3017d52debdef9cb5672712380891ec6781673a8d4b3
     dependencies:
