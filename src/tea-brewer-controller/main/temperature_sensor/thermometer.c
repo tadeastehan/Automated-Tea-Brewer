@@ -1,6 +1,6 @@
 /**
  * @file thermometer.c
- * @brief MLX90614 Infrared Temperature Sensor Driver Implementation
+ * @brief MLX90614 Non-Contact Infrared Temperature Sensor Driver Implementation
  * 
  * Uses shared bit-bang I2C engine with repeated START and PEC error checking.
  */
@@ -10,6 +10,8 @@
 #include "esp_rom_sys.h"
 #include "driver/gpio.h"
 #include "main_pins.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 
 static const char *TAG = "THERMOMETER";
@@ -19,6 +21,8 @@ static const char *TAG = "THERMOMETER";
 #define MLX90614_TOBJ1      0x07
 
 static bool s_initialized = false;
+static gpio_num_t s_sda_pin = PIN_I2C_SDA;
+static gpio_num_t s_scl_pin = PIN_I2C_SCL;
 
 /* ============================================================================
    SHARED BIT-BANG I2C ENGINE
@@ -28,35 +32,35 @@ static bool s_initialized = false;
 static void bb_configure_pins(void)
 {
     gpio_config_t conf = {
-        .pin_bit_mask = (1ULL << PIN_I2C_SDA) | (1ULL << PIN_I2C_SCL),
+        .pin_bit_mask = (1ULL << s_sda_pin) | (1ULL << s_scl_pin),
         .mode = GPIO_MODE_INPUT_OUTPUT_OD,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&conf);
-    gpio_set_level(PIN_I2C_SDA, 1);
-    gpio_set_level(PIN_I2C_SCL, 1);
+    gpio_set_level(s_sda_pin, 1);
+    gpio_set_level(s_scl_pin, 1);
 }
 
 static void bb_start(void)
 {
-    gpio_set_level(PIN_I2C_SDA, 1);
-    gpio_set_level(PIN_I2C_SCL, 1);
+    gpio_set_level(s_sda_pin, 1);
+    gpio_set_level(s_scl_pin, 1);
     esp_rom_delay_us(I2C_DELAY_US);
-    gpio_set_level(PIN_I2C_SDA, 0);
+    gpio_set_level(s_sda_pin, 0);
     esp_rom_delay_us(I2C_DELAY_US);
-    gpio_set_level(PIN_I2C_SCL, 0);
+    gpio_set_level(s_scl_pin, 0);
     esp_rom_delay_us(I2C_DELAY_US);
 }
 
 static void bb_stop(void)
 {
-    gpio_set_level(PIN_I2C_SDA, 0);
+    gpio_set_level(s_sda_pin, 0);
     esp_rom_delay_us(I2C_DELAY_US);
-    gpio_set_level(PIN_I2C_SCL, 1);
+    gpio_set_level(s_scl_pin, 1);
     esp_rom_delay_us(I2C_DELAY_US);
-    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(s_sda_pin, 1);
     esp_rom_delay_us(I2C_DELAY_US);
 }
 
@@ -64,21 +68,21 @@ static bool bb_write_byte(uint8_t byte)
 {
     for (int i = 0; i < 8; i++) {
         int bit = (byte & 0x80) ? 1 : 0;
-        gpio_set_level(PIN_I2C_SDA, bit);
+        gpio_set_level(s_sda_pin, bit);
         esp_rom_delay_us(I2C_DELAY_US);
-        gpio_set_level(PIN_I2C_SCL, 1);
+        gpio_set_level(s_scl_pin, 1);
         esp_rom_delay_us(I2C_DELAY_US);
-        gpio_set_level(PIN_I2C_SCL, 0);
+        gpio_set_level(s_scl_pin, 0);
         esp_rom_delay_us(I2C_DELAY_US);
         byte <<= 1;
     }
 
-    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(s_sda_pin, 1);
     esp_rom_delay_us(I2C_DELAY_US);
-    gpio_set_level(PIN_I2C_SCL, 1);
+    gpio_set_level(s_scl_pin, 1);
     esp_rom_delay_us(I2C_DELAY_US);
-    int ack_bit = gpio_get_level(PIN_I2C_SDA);
-    gpio_set_level(PIN_I2C_SCL, 0);
+    int ack_bit = gpio_get_level(s_sda_pin);
+    gpio_set_level(s_scl_pin, 0);
     esp_rom_delay_us(I2C_DELAY_US);
 
     return (ack_bit == 0);
@@ -87,25 +91,41 @@ static bool bb_write_byte(uint8_t byte)
 static uint8_t bb_read_byte(bool send_ack)
 {
     uint8_t byte = 0;
-    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(s_sda_pin, 1);
 
     for (int i = 0; i < 8; i++) {
-        gpio_set_level(PIN_I2C_SCL, 1);
+        gpio_set_level(s_scl_pin, 1);
         esp_rom_delay_us(I2C_DELAY_US);
-        byte = (byte << 1) | (gpio_get_level(PIN_I2C_SDA) ? 1 : 0);
-        gpio_set_level(PIN_I2C_SCL, 0);
+        byte = (byte << 1) | (gpio_get_level(s_sda_pin) ? 1 : 0);
+        gpio_set_level(s_scl_pin, 0);
         esp_rom_delay_us(I2C_DELAY_US);
     }
 
-    gpio_set_level(PIN_I2C_SDA, send_ack ? 0 : 1);
+    gpio_set_level(s_sda_pin, send_ack ? 0 : 1);
     esp_rom_delay_us(I2C_DELAY_US);
-    gpio_set_level(PIN_I2C_SCL, 1);
+    gpio_set_level(s_scl_pin, 1);
     esp_rom_delay_us(I2C_DELAY_US);
-    gpio_set_level(PIN_I2C_SCL, 0);
+    gpio_set_level(s_scl_pin, 0);
     esp_rom_delay_us(I2C_DELAY_US);
-    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(s_sda_pin, 1);
 
     return byte;
+}
+
+static uint8_t crc8(const uint8_t *data, size_t len)
+{
+    uint8_t crc = 0;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            if (crc & 0x80) {
+                crc = (crc << 1) ^ 0x07;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
 }
 
 static esp_err_t mlx90614_read_reg(uint8_t reg, uint16_t *val)
@@ -139,8 +159,16 @@ static esp_err_t mlx90614_read_reg(uint8_t reg, uint16_t *val)
     uint8_t msb = bb_read_byte(true);
 
     // 5. Read PEC Byte (NACK)
-    (void)bb_read_byte(false);
+    uint8_t pec = bb_read_byte(false);
     bb_stop();
+
+    // Validate PEC CRC
+    uint8_t pec_payload[5] = { 0xB4, reg, 0xB5, lsb, msb };
+    uint8_t expected_pec = crc8(pec_payload, 5);
+
+    if (pec != expected_pec) {
+        ESP_LOGD(TAG, "PEC mismatch on reg 0x%02X: got 0x%02X, expected 0x%02X", reg, pec, expected_pec);
+    }
 
     *val = ((uint16_t)msb << 8) | lsb;
     return ESP_OK;
@@ -166,13 +194,23 @@ static float apply_temp_calibration(float raw_temp)
 
 esp_err_t thermometer_init(void)
 {
-    ESP_LOGI(TAG, "Initializing MLX90614 temperature sensor...");
+    ESP_LOGI(TAG, "Initializing MLX90614 temperature sensor (0x5A)...");
     bb_configure_pins();
 
     uint16_t raw_ta = 0;
-    esp_err_t ret = mlx90614_read_reg(MLX90614_TA, &raw_ta);
+    esp_err_t ret = ESP_FAIL;
+
+    // Retry up to 5 times with delay for sensor power-on stabilization
+    for (int attempt = 0; attempt < 5; attempt++) {
+        ret = mlx90614_read_reg(MLX90614_TA, &raw_ta);
+        if (ret == ESP_OK && raw_ta != 0 && raw_ta != 0xFFFF) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
     if (ret != ESP_OK || raw_ta == 0 || raw_ta == 0xFFFF) {
-        ESP_LOGE(TAG, "MLX90614 not responding at I2C address 0x5A");
+        ESP_LOGW(TAG, "MLX90614 not responding at I2C address 0x5A");
         s_initialized = false;
         return ESP_ERR_NOT_FOUND;
     }
@@ -194,7 +232,10 @@ esp_err_t thermometer_deinit(void)
 esp_err_t thermometer_get_object_temp_raw(float *temperature)
 {
     if (temperature == NULL) return ESP_ERR_INVALID_ARG;
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+
+    if (!s_initialized) {
+        if (thermometer_init() != ESP_OK) return ESP_ERR_INVALID_STATE;
+    }
 
     uint16_t raw = 0;
     esp_err_t ret = mlx90614_read_reg(MLX90614_TOBJ1, &raw);
@@ -207,7 +248,6 @@ esp_err_t thermometer_get_object_temp_raw(float *temperature)
 esp_err_t thermometer_get_object_temp(float *temperature)
 {
     if (temperature == NULL) return ESP_ERR_INVALID_ARG;
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
     float raw_temp = 0.0f;
     esp_err_t ret = thermometer_get_object_temp_raw(&raw_temp);
@@ -220,7 +260,10 @@ esp_err_t thermometer_get_object_temp(float *temperature)
 esp_err_t thermometer_get_ambient_temp(float *temperature)
 {
     if (temperature == NULL) return ESP_ERR_INVALID_ARG;
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+
+    if (!s_initialized) {
+        if (thermometer_init() != ESP_OK) return ESP_ERR_INVALID_STATE;
+    }
 
     uint16_t raw = 0;
     esp_err_t ret = mlx90614_read_reg(MLX90614_TA, &raw);
@@ -233,7 +276,6 @@ esp_err_t thermometer_get_ambient_temp(float *temperature)
 esp_err_t thermometer_get_temperatures(thermometer_readings_t *readings)
 {
     if (readings == NULL) return ESP_ERR_INVALID_ARG;
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
     esp_err_t ret = thermometer_get_object_temp(&readings->object_temp);
     if (ret != ESP_OK) return ret;
@@ -246,6 +288,9 @@ esp_err_t thermometer_get_temperatures(thermometer_readings_t *readings)
 
 bool thermometer_is_initialized(void)
 {
+    if (!s_initialized) {
+        thermometer_init();
+    }
     return s_initialized;
 }
 
