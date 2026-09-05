@@ -1,6 +1,6 @@
 /**
  * @file rtc.h
- * @brief DS1307 Real-Time Clock interface
+ * @brief D8563TS / PCF8563 Real-Time Clock Interface
  */
 
 #ifndef RTC_H
@@ -11,12 +11,15 @@
 #include <time.h>
 #include <stdbool.h>
 
+#define D8563_I2C_ADDR      0x51
+
 /**
- * @brief Initialize DS1307 RTC with shared I2C bus
- * @param i2c_bus I2C master bus handle (shared with other sensors)
+ * @brief Initialize D8563TS / PCF8563 RTC on shared I2C bus
+ * @param i2c_bus I2C master bus handle (or NULL for default pins)
  * @return ESP_OK on success
  */
-esp_err_t rtc_init(i2c_master_bus_handle_t i2c_bus);
+esp_err_t rtc_clock_init(i2c_master_bus_handle_t i2c_bus);
+#define rtc_init rtc_clock_init
 
 /**
  * @brief Get current time from RTC
@@ -40,7 +43,7 @@ esp_err_t rtc_set_time(const struct tm *time);
 esp_err_t rtc_get_time_with_timezone(struct tm *time);
 
 /**
- * @brief Check if RTC is initialized
+ * @brief Check if RTC is initialized and responding on I2C
  * @return true if initialized, false otherwise
  */
 bool rtc_is_initialized(void);

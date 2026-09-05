@@ -36,7 +36,7 @@
 
 static const char *TAG = "MAIN";
 
-#define DEBUG 1  // Set to 1 to enable distance sensor debug output
+#define DEBUG 0  // Set to 0 to prevent console spamming
 
 /**
  * @brief Initialize NVS flash storage
@@ -206,24 +206,22 @@ void app_main(void)
      * ESP #2 waits in IDLE state for ESP #1 to send HOME command */
     
     /* ========================================
-       STEP 5: Initialize Temperature Sensor
+       STEP 5.1: Initialize RTC (D8563TS)
        ======================================== */
-    console_printf("Initializing temperature sensor...\r\n");
-    ret = thermometer_init();
+    console_printf("Initializing RTC...\r\n");
+    ret = rtc_init(NULL);
     if (ret == ESP_OK) {
-        console_printf("Temperature sensor: OK\r\n");
+        console_printf("RTC: OK\r\n");
     } else {
-        console_printf("Temperature sensor: FAILED\r\n");
-        ESP_LOGW(TAG, "Temperature sensor init failed: %s", esp_err_to_name(ret));
+        console_printf("RTC: FAILED\r\n");
+        ESP_LOGW(TAG, "RTC init failed: %s", esp_err_to_name(ret));
     }
-    
+
     /* ========================================
-       STEP 5.5: Initialize Distance Sensor (VL53L0X)
+       STEP 5.2: Initialize Distance Sensor (VL53L0X)
        ======================================== */
     console_printf("Initializing distance sensor...\r\n");
-    /* Share I2C bus with temperature sensor if available */
-    i2c_master_bus_handle_t i2c_bus = thermometer_get_bus_handle();
-    ret = distance_sensor_init(i2c_bus);
+    ret = distance_sensor_init(NULL);
     if (ret == ESP_OK) {
         console_printf("Distance sensor: OK\r\n");
     } else {
@@ -232,7 +230,7 @@ void app_main(void)
     }
     
     /* ========================================
-       STEP 5.6: Initialize Pot Sensor
+       STEP 5.3: Initialize Pot Sensor
        ======================================== */
     console_printf("Initializing pot sensor...\r\n");
     ret = pot_sensor_init();
@@ -242,18 +240,17 @@ void app_main(void)
         console_printf("Pot sensor: FAILED\r\n");
         ESP_LOGW(TAG, "Pot sensor init failed: %s", esp_err_to_name(ret));
     }
-    
+
     /* ========================================
-       STEP 5.7: Initialize RTC (DS1307)
+       STEP 5.4: Initialize MLX90614 Temperature Sensor
        ======================================== */
-    console_printf("Initializing RTC...\r\n");
-    /* Share I2C bus with temperature and distance sensors */
-    ret = rtc_init(i2c_bus);
+    console_printf("Initializing temperature sensor...\r\n");
+    ret = thermometer_init();
     if (ret == ESP_OK) {
-        console_printf("RTC: OK\r\n");
+        console_printf("Temperature sensor: OK\r\n");
     } else {
-        console_printf("RTC: FAILED\r\n");
-        ESP_LOGW(TAG, "RTC init failed: %s", esp_err_to_name(ret));
+        console_printf("Temperature sensor: FAILED\r\n");
+        ESP_LOGW(TAG, "Temperature sensor init failed: %s", esp_err_to_name(ret));
     }
     
     /* ========================================

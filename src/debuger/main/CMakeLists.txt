@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS 
+        "main.c"
+        "d8563.c"
+        "mlx90614.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tea-brewer-controller/main/motor/tmc2130.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tea-brewer-controller/main/motor/motor_control.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tea-brewer-controller/main/distance_sensor/distance_sensor.c"
+    INCLUDE_DIRS 
+        "."
+        "../../tea-brewer-controller/main"
+        "../../tea-brewer-controller/main/motor"
+        "../../tea-brewer-controller/main/distance_sensor"
+    REQUIRES
+        driver
+        esp_timer
+        nvs_flash
+        esp_rom
+        soc
+)

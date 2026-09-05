@@ -1,10 +1,8 @@
-/**
- * @file console.c
- * @brief USB Serial JTAG console implementation
- */
-
 #include "console.h"
 #include "../motor/motor_control.h"
+#include "../temperature_sensor/thermometer.h"
+#include "../pot_sensor/pot_sensor.h"
+#include "../rtc/rtc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/usb_serial_jtag.h"
@@ -66,7 +64,7 @@ bool console_has_input(void)
    ============================================ */
 static void print_help(void)
 {
-    console_printf("\r\n=== MOTOR CONTROL COMMANDS ===\r\n");
+    console_printf("\r\n=== TEA BREWER CONTROLLER COMMANDS ===\r\n");
     console_printf("  c     - Full calibration (without load)\r\n");
     console_printf("  t     - Calibrate with SG monitoring\r\n");
     console_printf("  f     - Fast home\r\n");
@@ -77,10 +75,12 @@ static void print_help(void)
     console_printf("  i/d   - Increase/decrease SGT\r\n");
     console_printf("  w     - Save to flash\r\n");
     console_printf("  z     - Clear calibration\r\n");
-    console_printf("  s     - Status\r\n");
+    console_printf("  s     - Status (Motor, Temp, Dist, RTC)\r\n");
+    console_printf("  temp  - Read MLX90614 IR & ambient temperature\r\n");
+    console_printf("  dist  - Read VL53L0X laser distance sensor\r\n");
     console_printf("  e/x   - Enable/disable motor\r\n");
     console_printf("  h     - Help\r\n");
-    console_printf("==============================\r\n\r\n");
+    console_printf("======================================\r\n\r\n");
 }
 
 static void print_status(void)
@@ -88,19 +88,91 @@ static void print_status(void)
     motor_status_t status;
     motor_get_status(&status);
     
-    console_printf("\r\n=== STATUS ===\r\n");
-    console_printf("Calibrated: %s\r\n", status.is_calibrated ? "YES" : "NO");
-    console_printf("Homed:      %s\r\n", status.is_homed ? "YES" : "NO");
-    console_printf("Position:   %ld steps (%.1f%%)\r\n", 
+    console_printf("\r\n================ SYSTEM STATUS ================\r\n");
+    console_printf(" [STEPPER MOTOR]\r\n");
+    console_printf("  Calibrated : %s\r\n", status.is_calibrated ? "YES" : "NO");
+    console_printf("  Homed      : %s\r\n", status.is_homed ? "YES" : "NO");
+    console_printf("  Position   : %ld steps (%.1f%%)\r\n", 
                    (long)status.position_steps, status.position_percent);
-    console_printf("Total:      %ld steps\r\n", (long)status.total_steps);
-    console_printf("SGT:        %d\r\n", status.sgt_threshold);
-    console_printf("==============\r\n\r\n");
+    console_printf("  Total Range: %ld steps\r\n", (long)status.total_steps);
+    console_printf("  SGT Thresh : %d\r\n", status.sgt_threshold);
+
+    console_printf("\r\n [MLX90614 IR THERMOMETER]\r\n");
+    if (thermometer_is_initialized()) {
+        float obj_temp = 0.0f, amb_temp = 0.0f, raw_obj = 0.0f;
+        thermometer_get_object_temp(&obj_temp);
+        thermometer_get_object_temp_raw(&raw_obj);
+        thermometer_get_ambient_temp(&amb_temp);
+        console_printf("  Object (Calibrated) : %.1f °C (%.1f °F)\r\n", obj_temp, (obj_temp * 1.8f) + 32.0f);
+        console_printf("  Object (Raw IR)     : %.1f °C (%.1f °F)\r\n", raw_obj, (raw_obj * 1.8f) + 32.0f);
+        console_printf("  Ambient Temp        : %.1f °C (%.1f °F)\r\n", amb_temp, (amb_temp * 1.8f) + 32.0f);
+    } else {
+        console_printf("  Status: NOT INITIALIZED / OFFLINE\r\n");
+    }
+
+    console_printf("\r\n [VL53L0X DISTANCE / POT SENSOR]\r\n");
+    if (pot_sensor_is_initialized()) {
+        uint16_t dist_mm = 0;
+        pot_sensor_get_distance(&dist_mm);
+        bool present = pot_sensor_is_present();
+        console_printf("  Distance : %u mm (%.1f cm)\r\n", dist_mm, (float)dist_mm / 10.0f);
+        console_printf("  Pot State: %s (Threshold: %u mm)\r\n", 
+                       present ? "PRESENT [OK]" : "NOT PRESENT", pot_sensor_get_threshold());
+    } else {
+        console_printf("  Status: NOT INITIALIZED / OFFLINE\r\n");
+    }
+
+    console_printf("\r\n [D8563TS REAL-TIME CLOCK]\r\n");
+    if (rtc_is_initialized()) {
+        struct tm timeinfo;
+        if (rtc_get_time_with_timezone(&timeinfo) == ESP_OK) {
+            console_printf("  Time: %04d-%02d-%02d %02d:%02d:%02d (GMT+1)\r\n",
+                           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        } else {
+            console_printf("  Time: READ ERROR\r\n");
+        }
+    } else {
+        console_printf("  Status: NOT INITIALIZED / OFFLINE\r\n");
+    }
+    console_printf("===============================================\r\n\r\n");
 }
 
 static void process_command(const char *cmd)
 {
     if (strlen(cmd) == 0) return;
+
+    if (strcmp(cmd, "temp") == 0 || strcmp(cmd, "ir") == 0) {
+        if (thermometer_is_initialized()) {
+            float obj_temp = 0.0f, amb_temp = 0.0f, raw_obj = 0.0f;
+            thermometer_get_object_temp(&obj_temp);
+            thermometer_get_object_temp_raw(&raw_obj);
+            thermometer_get_ambient_temp(&amb_temp);
+            console_printf("\r\n--- MLX90614 Temperature Reading ---\r\n");
+            console_printf("  Object (Calibrated) : %.1f °C (%.1f °F)\r\n", obj_temp, (obj_temp * 1.8f) + 32.0f);
+            console_printf("  Object (Raw IR)     : %.1f °C (%.1f °F)\r\n", raw_obj, (raw_obj * 1.8f) + 32.0f);
+            console_printf("  Ambient Temp        : %.1f °C (%.1f °F)\r\n", amb_temp, (amb_temp * 1.8f) + 32.0f);
+            console_printf("------------------------------------\r\n\r\n");
+        } else {
+            console_printf("Thermometer not initialized!\r\n");
+        }
+        return;
+    }
+
+    if (strcmp(cmd, "dist") == 0 || strcmp(cmd, "tof") == 0) {
+        if (pot_sensor_is_initialized()) {
+            uint16_t dist_mm = 0;
+            pot_sensor_get_distance(&dist_mm);
+            bool present = pot_sensor_is_present();
+            console_printf("\r\n--- VL53L0X Distance Reading ---\r\n");
+            console_printf("  Distance : %u mm (%.1f cm)\r\n", dist_mm, (float)dist_mm / 10.0f);
+            console_printf("  Pot State: %s\r\n", present ? "PRESENT" : "NOT PRESENT");
+            console_printf("--------------------------------\r\n\r\n");
+        } else {
+            console_printf("Distance sensor not initialized!\r\n");
+        }
+        return;
+    }
     
     if (strlen(cmd) == 1) {
         switch (cmd[0]) {

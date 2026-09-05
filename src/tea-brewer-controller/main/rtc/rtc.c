@@ -1,170 +1,315 @@
 /**
  * @file rtc.c
- * @brief DS1307 Real-Time Clock implementation using ESP-IDF I2C master driver
+ * @brief D8563TS / PCF8563 Real-Time Clock Implementation
+ * 
+ * Uses shared bit-bang I2C engine compatible with all sensors on the bus.
  */
 
 #include "rtc.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
+#include "driver/gpio.h"
+#include "main_pins.h"
 #include <string.h>
 
 static const char *TAG = "RTC";
 
-#define DS1307_ADDR         0x68    // DS1307 I2C address
-#define DS1307_REG_TIME     0x00    // Time register start address
+#define D8563_REG_CTRL1     0x00
+#define D8563_REG_CTRL2     0x01
+#define D8563_REG_VL_SEC    0x02
+#define D8563_REG_MIN       0x03
+#define D8563_REG_HOUR      0x04
+#define D8563_REG_DAY       0x05
+#define D8563_REG_WDAY      0x06
+#define D8563_REG_CENT_MON  0x07
+#define D8563_REG_YEAR      0x08
 
-static i2c_master_dev_handle_t rtc_handle = NULL;
-static bool initialized = false;
+static bool s_initialized = false;
 
-/* Helper: BCD to Decimal conversion */
-static uint8_t bcd2dec(uint8_t val)
+/* ============================================================================
+   SHARED BIT-BANG I2C ENGINE
+   ============================================================================ */
+#define I2C_DELAY_US 10
+
+static void bb_configure_pins(void)
+{
+    gpio_config_t conf = {
+        .pin_bit_mask = (1ULL << PIN_I2C_SDA) | (1ULL << PIN_I2C_SCL),
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&conf);
+    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(PIN_I2C_SCL, 1);
+}
+
+static void bb_start(void)
+{
+    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+}
+
+static void bb_stop(void)
+{
+    gpio_set_level(PIN_I2C_SDA, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+}
+
+static bool bb_write_byte(uint8_t byte)
+{
+    for (int i = 0; i < 8; i++) {
+        int bit = (byte & 0x80) ? 1 : 0;
+        gpio_set_level(PIN_I2C_SDA, bit);
+        esp_rom_delay_us(I2C_DELAY_US);
+        gpio_set_level(PIN_I2C_SCL, 1);
+        esp_rom_delay_us(I2C_DELAY_US);
+        gpio_set_level(PIN_I2C_SCL, 0);
+        esp_rom_delay_us(I2C_DELAY_US);
+        byte <<= 1;
+    }
+
+    gpio_set_level(PIN_I2C_SDA, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    int ack_bit = gpio_get_level(PIN_I2C_SDA);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+
+    return (ack_bit == 0);
+}
+
+static uint8_t bb_read_byte(bool send_ack)
+{
+    uint8_t byte = 0;
+    gpio_set_level(PIN_I2C_SDA, 1);
+
+    for (int i = 0; i < 8; i++) {
+        gpio_set_level(PIN_I2C_SCL, 1);
+        esp_rom_delay_us(I2C_DELAY_US);
+        byte = (byte << 1) | (gpio_get_level(PIN_I2C_SDA) ? 1 : 0);
+        gpio_set_level(PIN_I2C_SCL, 0);
+        esp_rom_delay_us(I2C_DELAY_US);
+    }
+
+    gpio_set_level(PIN_I2C_SDA, send_ack ? 0 : 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 1);
+
+    return byte;
+}
+
+static bool d8563_bb_write_regs(uint8_t reg, const uint8_t *data, size_t len)
+{
+    bb_configure_pins();
+    bb_start();
+    if (!bb_write_byte((D8563_I2C_ADDR << 1) | 0)) {
+        bb_stop();
+        return false;
+    }
+    if (!bb_write_byte(reg)) {
+        bb_stop();
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (!bb_write_byte(data[i])) {
+            bb_stop();
+            return false;
+        }
+    }
+    bb_stop();
+    return true;
+}
+
+static bool d8563_bb_read_regs(uint8_t reg, uint8_t *data, size_t len)
+{
+    bb_configure_pins();
+    bb_start();
+    if (!bb_write_byte((D8563_I2C_ADDR << 1) | 0)) {
+        bb_stop();
+        return false;
+    }
+    if (!bb_write_byte(reg)) {
+        bb_stop();
+        return false;
+    }
+    bb_start(); // Repeated START
+    if (!bb_write_byte((D8563_I2C_ADDR << 1) | 1)) {
+        bb_stop();
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        bool ack = (i < len - 1);
+        data[i] = bb_read_byte(ack);
+    }
+    bb_stop();
+    return true;
+}
+
+/* ============================================================================
+   BCD CONVERSIONS
+   ============================================================================ */
+
+static inline uint8_t bcd2dec(uint8_t val)
 {
     return (val >> 4) * 10 + (val & 0x0F);
 }
 
-/* Helper: Decimal to BCD conversion */
-static uint8_t dec2bcd(uint8_t val)
+static inline uint8_t dec2bcd(uint8_t val)
 {
     return ((val / 10) << 4) | (val % 10);
 }
 
-esp_err_t rtc_init(i2c_master_bus_handle_t i2c_bus)
+/* ============================================================================
+   PUBLIC FUNCTIONS
+   ============================================================================ */
+
+esp_err_t rtc_clock_init(i2c_master_bus_handle_t i2c_bus)
 {
-    ESP_LOGI(TAG, "Initializing DS1307 RTC...");
-    
-    if (initialized) {
-        ESP_LOGW(TAG, "Already initialized");
-        return ESP_OK;
+    (void)i2c_bus;
+    ESP_LOGI(TAG, "Initializing D8563TS / PCF8563 RTC (0x51)...");
+
+    bb_configure_pins();
+
+    uint8_t test_byte = 0;
+    if (!d8563_bb_read_regs(D8563_REG_CTRL1, &test_byte, 1)) {
+        ESP_LOGE(TAG, "D8563TS RTC not responding at I2C address 0x51");
+        s_initialized = false;
+        return ESP_ERR_NOT_FOUND;
     }
-    
-    if (i2c_bus == NULL) {
-        ESP_LOGE(TAG, "Invalid I2C bus handle");
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    /* Configure DS1307 device on shared I2C bus */
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = DS1307_ADDR,
-        .scl_speed_hz = 100000,  // 100kHz
-    };
-    
-    esp_err_t ret = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &rtc_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add DS1307 to I2C bus: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    initialized = true;
-    ESP_LOGI(TAG, "DS1307 RTC initialized successfully (shared I2C bus)");
-    
-    /* Uncomment to set initial time:
-    struct tm time = {
-        .tm_year = 124,  // 2024 - 1900
-        .tm_mon  = 11,   // December (0-based)
-        .tm_mday = 8,
-        .tm_hour = 12,
-        .tm_min  = 0,
-        .tm_sec  = 0
-    };
-    ret = rtc_set_time(&time);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set time: %s", esp_err_to_name(ret));
-    }
-    */
-    
+
+    // Ensure STOP bit (bit 5 of CTRL1) is 0 so the 32.768kHz oscillator runs
+    uint8_t ctrl1 = 0x00;
+    d8563_bb_write_regs(D8563_REG_CTRL1, &ctrl1, 1);
+
+    s_initialized = true;
+    ESP_LOGI(TAG, "D8563TS RTC initialized successfully (0x51)");
     return ESP_OK;
 }
 
 esp_err_t rtc_get_time(struct tm *time)
 {
-    if (!initialized) {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    
     if (time == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    
-    uint8_t data[7];
-    uint8_t reg_addr = DS1307_REG_TIME;
-    
-    /* Write register address then read 7 bytes */
-    esp_err_t ret = i2c_master_transmit_receive(rtc_handle, &reg_addr, 1, data, 7, -1);
-    if (ret != ESP_OK) {
-        return ret;
+
+    uint8_t raw[7];
+    if (!d8563_bb_read_regs(D8563_REG_VL_SEC, raw, 7)) {
+        return ESP_FAIL;
     }
-    
-    /* Convert BCD to decimal */
-    time->tm_sec = bcd2dec(data[0] & 0x7F);  // Mask CH bit
-    time->tm_min = bcd2dec(data[1]);
-    time->tm_hour = bcd2dec(data[2] & 0x3F); // 24-hour format
-    time->tm_wday = bcd2dec(data[3]) - 1;    // 0-6
-    time->tm_mday = bcd2dec(data[4]);
-    time->tm_mon = bcd2dec(data[5]) - 1;     // 0-11
-    time->tm_year = bcd2dec(data[6]) + 100;  // Years since 1900 (2000-2099 -> 100-199)
-    
+
+    memset(time, 0, sizeof(struct tm));
+
+    // 0x02: Seconds (bit 7 = VL flag)
+    time->tm_sec = bcd2dec(raw[0] & 0x7F);
+
+    // 0x03: Minutes (bit 7 = unused)
+    time->tm_min = bcd2dec(raw[1] & 0x7F);
+
+    // 0x04: Hours (bit 6-7 = unused)
+    time->tm_hour = bcd2dec(raw[2] & 0x3F);
+
+    // 0x05: Days (bit 6-7 = unused)
+    time->tm_mday = bcd2dec(raw[3] & 0x3F);
+
+    // 0x06: Weekday (0-6)
+    time->tm_wday = raw[4] & 0x07;
+
+    // 0x07: Century + Month (bit 7 = C, bit 0-4 = Month)
+    time->tm_mon = bcd2dec(raw[5] & 0x1F) - 1; // tm_mon is 0-11
+
+    // 0x08: Year (00-99 -> 2000-2099)
+    uint16_t year = 2000 + bcd2dec(raw[6]);
+    time->tm_year = year - 1900; // tm_year is years since 1900
+
+    time->tm_isdst = -1;
+
     return ESP_OK;
 }
 
 esp_err_t rtc_set_time(const struct tm *time)
 {
-    if (!initialized) {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    
     if (time == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    
-    uint8_t data[8];
-    
-    data[0] = DS1307_REG_TIME;                      // Register address
-    data[1] = dec2bcd(time->tm_sec) & 0x7F;        // Seconds (ensure CH=0, clock enabled)
-    data[2] = dec2bcd(time->tm_min);               // Minutes
-    data[3] = dec2bcd(time->tm_hour);              // Hours (24-hour format)
-    data[4] = dec2bcd(time->tm_wday + 1);          // Day of week (1-7)
-    data[5] = dec2bcd(time->tm_mday);              // Day of month
-    data[6] = dec2bcd(time->tm_mon + 1);           // Month (1-12)
-    data[7] = dec2bcd(time->tm_year % 100);        // Year (00-99)
-    
-    return i2c_master_transmit(rtc_handle, data, 8, -1);
+
+    // 1. Stop clock during setup
+    uint8_t ctrl1_stop = 0x20;
+    d8563_bb_write_regs(D8563_REG_CTRL1, &ctrl1_stop, 1);
+
+    uint8_t raw[7];
+    raw[0] = dec2bcd(time->tm_sec) & 0x7F;             // VL = 0
+    raw[1] = dec2bcd(time->tm_min) & 0x7F;
+    raw[2] = dec2bcd(time->tm_hour) & 0x3F;
+    raw[3] = dec2bcd(time->tm_mday) & 0x3F;
+    raw[4] = (uint8_t)(time->tm_wday & 0x07);
+    raw[5] = dec2bcd((time->tm_mon + 1)) & 0x1F;       // Century bit = 0 (2000s)
+    raw[6] = dec2bcd((time->tm_year + 1900) % 100);
+
+    if (!d8563_bb_write_regs(D8563_REG_VL_SEC, raw, 7)) {
+        return ESP_FAIL;
+    }
+
+    // 2. Start clock
+    uint8_t ctrl1_run = 0x00;
+    d8563_bb_write_regs(D8563_REG_CTRL1, &ctrl1_run, 1);
+
+    return ESP_OK;
 }
 
 esp_err_t rtc_get_time_with_timezone(struct tm *time)
 {
-    if (!initialized) {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    
     if (time == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    
-    /* Get UTC time from RTC */
+
     esp_err_t ret = rtc_get_time(time);
     if (ret != ESP_OK) {
         return ret;
     }
-    
-    /* Convert to time_t for easy calculation */
+
     time_t raw_time = mktime(time);
-    
-    /* Add GMT+1 offset (3600 seconds = 1 hour) */
-    raw_time += 3600;
-    
-    /* Convert back to tm structure */
-    struct tm *adjusted_time = localtime(&raw_time);
-    if (adjusted_time == NULL) {
+    if (raw_time == (time_t)-1) {
         return ESP_FAIL;
     }
-    
-    /* Copy adjusted time back */
-    memcpy(time, adjusted_time, sizeof(struct tm));
-    
+
+    // Add GMT+1 offset (3600 seconds)
+    raw_time += 3600;
+
+    struct tm *adjusted = localtime(&raw_time);
+    if (adjusted == NULL) {
+        return ESP_FAIL;
+    }
+
+    *time = *adjusted;
     return ESP_OK;
 }
 
 bool rtc_is_initialized(void)
 {
-    return initialized;
+    return s_initialized;
 }

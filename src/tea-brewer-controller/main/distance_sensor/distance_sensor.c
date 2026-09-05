@@ -74,15 +74,132 @@ static const char *TAG = "DISTANCE_SENSOR";
 #define ALGO_PHASECAL_LIM                       0x30
 #define ALGO_PHASECAL_CONFIG_TIMEOUT            0x30
 
+#include "esp_rom_sys.h"
+#include "driver/gpio.h"
+
 /* ============================================
    Static Variables
    ============================================ */
-static i2c_master_bus_handle_t s_i2c_bus_handle = NULL;
-static i2c_master_dev_handle_t s_vl53l0x_handle = NULL;
 static bool s_initialized = false;
-static bool s_owns_bus = false;
 static uint8_t s_stop_variable = 0;
 static uint32_t s_measurement_timing_budget_us = 0;
+
+/* ============================================
+   Universal Bit-Bang I2C Engine (Bus Sharing)
+   ============================================ */
+#define I2C_DELAY_US 10
+
+static void bb_configure_pins(void)
+{
+    gpio_config_t conf = {
+        .pin_bit_mask = (1ULL << PIN_I2C_SDA) | (1ULL << PIN_I2C_SCL),
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&conf);
+    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(PIN_I2C_SCL, 1);
+}
+
+static void bb_start(void)
+{
+    gpio_set_level(PIN_I2C_SDA, 1);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+}
+
+static void bb_stop(void)
+{
+    gpio_set_level(PIN_I2C_SDA, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+}
+
+static bool bb_write_byte(uint8_t byte)
+{
+    for (int i = 0; i < 8; i++) {
+        int bit = (byte & 0x80) ? 1 : 0;
+        gpio_set_level(PIN_I2C_SDA, bit);
+        esp_rom_delay_us(I2C_DELAY_US);
+        gpio_set_level(PIN_I2C_SCL, 1);
+        esp_rom_delay_us(I2C_DELAY_US);
+        gpio_set_level(PIN_I2C_SCL, 0);
+        esp_rom_delay_us(I2C_DELAY_US);
+        byte <<= 1;
+    }
+
+    gpio_set_level(PIN_I2C_SDA, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    int ack_bit = gpio_get_level(PIN_I2C_SDA);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+
+    return (ack_bit == 0);
+}
+
+static uint8_t bb_read_byte(bool send_ack)
+{
+    uint8_t byte = 0;
+    gpio_set_level(PIN_I2C_SDA, 1);
+
+    for (int i = 0; i < 8; i++) {
+        gpio_set_level(PIN_I2C_SCL, 1);
+        esp_rom_delay_us(I2C_DELAY_US);
+        byte = (byte << 1) | (gpio_get_level(PIN_I2C_SDA) ? 1 : 0);
+        gpio_set_level(PIN_I2C_SCL, 0);
+        esp_rom_delay_us(I2C_DELAY_US);
+    }
+
+    gpio_set_level(PIN_I2C_SDA, send_ack ? 0 : 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 1);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SCL, 0);
+    esp_rom_delay_us(I2C_DELAY_US);
+    gpio_set_level(PIN_I2C_SDA, 1);
+
+    return byte;
+}
+
+static bool bb_vl53l0x_write(uint8_t reg, const uint8_t *data, size_t len)
+{
+    bb_configure_pins();
+    bb_start();
+    if (!bb_write_byte(0x52)) { bb_stop(); return false; } // 0x29 << 1 | 0
+    if (!bb_write_byte(reg)) { bb_stop(); return false; }
+    for (size_t i = 0; i < len; i++) {
+        if (!bb_write_byte(data[i])) { bb_stop(); return false; }
+    }
+    bb_stop();
+    return true;
+}
+
+static bool bb_vl53l0x_read(uint8_t reg, uint8_t *data, size_t len)
+{
+    bb_configure_pins();
+    bb_start();
+    if (!bb_write_byte(0x52)) { bb_stop(); return false; } // 0x29 << 1 | 0
+    if (!bb_write_byte(reg)) { bb_stop(); return false; }
+    bb_start(); // Repeated START
+    if (!bb_write_byte(0x53)) { bb_stop(); return false; } // 0x29 << 1 | 1
+    for (size_t i = 0; i < len; i++) {
+        bool ack = (i < len - 1);
+        data[i] = bb_read_byte(ack);
+    }
+    bb_stop();
+    return true;
+}
 
 /* ============================================
    I2C Helper Functions
@@ -90,53 +207,47 @@ static uint32_t s_measurement_timing_budget_us = 0;
 
 static esp_err_t vl53l0x_write_reg8(uint8_t reg, uint8_t value)
 {
-    uint8_t data[2] = {reg, value};
-    return i2c_master_transmit(s_vl53l0x_handle, data, 2, VL53L0X_TIMEOUT_MS);
+    return bb_vl53l0x_write(reg, &value, 1) ? ESP_OK : ESP_FAIL;
 }
 
 static esp_err_t vl53l0x_write_reg16(uint8_t reg, uint16_t value)
 {
-    uint8_t data[3] = {reg, (uint8_t)(value >> 8), (uint8_t)(value & 0xFF)};
-    return i2c_master_transmit(s_vl53l0x_handle, data, 3, VL53L0X_TIMEOUT_MS);
+    uint8_t buf[2] = { (uint8_t)(value >> 8), (uint8_t)(value & 0xFF) };
+    return bb_vl53l0x_write(reg, buf, 2) ? ESP_OK : ESP_FAIL;
 }
 
 static esp_err_t vl53l0x_write_reg32(uint8_t reg, uint32_t value)
 {
-    uint8_t data[5] = {reg, 
-                       (uint8_t)(value >> 24), 
-                       (uint8_t)(value >> 16),
-                       (uint8_t)(value >> 8), 
-                       (uint8_t)(value & 0xFF)};
-    return i2c_master_transmit(s_vl53l0x_handle, data, 5, VL53L0X_TIMEOUT_MS);
+    uint8_t buf[4] = { 
+        (uint8_t)(value >> 24), 
+        (uint8_t)(value >> 16), 
+        (uint8_t)(value >> 8), 
+        (uint8_t)(value & 0xFF) 
+    };
+    return bb_vl53l0x_write(reg, buf, 4) ? ESP_OK : ESP_FAIL;
 }
 
 static esp_err_t vl53l0x_write_multi(uint8_t reg, const uint8_t *src, uint8_t count)
 {
-    uint8_t data[64];
-    if (count > 63) return ESP_ERR_INVALID_SIZE;
-    data[0] = reg;
-    memcpy(&data[1], src, count);
-    return i2c_master_transmit(s_vl53l0x_handle, data, count + 1, VL53L0X_TIMEOUT_MS);
+    return bb_vl53l0x_write(reg, src, count) ? ESP_OK : ESP_FAIL;
 }
 
 static esp_err_t vl53l0x_read_reg8(uint8_t reg, uint8_t *value)
 {
-    return i2c_master_transmit_receive(s_vl53l0x_handle, &reg, 1, value, 1, VL53L0X_TIMEOUT_MS);
+    return bb_vl53l0x_read(reg, value, 1) ? ESP_OK : ESP_FAIL;
 }
 
 static esp_err_t vl53l0x_read_reg16(uint8_t reg, uint16_t *value)
 {
-    uint8_t data[2];
-    esp_err_t ret = i2c_master_transmit_receive(s_vl53l0x_handle, &reg, 1, data, 2, VL53L0X_TIMEOUT_MS);
-    if (ret == ESP_OK) {
-        *value = ((uint16_t)data[0] << 8) | data[1];
-    }
-    return ret;
+    uint8_t buf[2];
+    if (!bb_vl53l0x_read(reg, buf, 2)) return ESP_FAIL;
+    *value = ((uint16_t)buf[0] << 8) | buf[1];
+    return ESP_OK;
 }
 
 static esp_err_t vl53l0x_read_multi(uint8_t reg, uint8_t *dst, uint8_t count)
 {
-    return i2c_master_transmit_receive(s_vl53l0x_handle, &reg, 1, dst, count, VL53L0X_TIMEOUT_MS);
+    return bb_vl53l0x_read(reg, dst, count) ? ESP_OK : ESP_FAIL;
 }
 
 /* ============================================
@@ -722,66 +833,18 @@ static esp_err_t vl53l0x_perform_ref_calibration(void)
 
 esp_err_t distance_sensor_init(i2c_master_bus_handle_t bus_handle)
 {
-    esp_err_t ret;
-
     if (s_initialized) {
-        ESP_LOGW(TAG, "Already initialized");
-        return ESP_ERR_INVALID_STATE;
+        return ESP_OK;
     }
 
     ESP_LOGI(TAG, "Initializing VL53L0X distance sensor...");
-
-    /* Use existing bus or create new one */
-    if (bus_handle != NULL) {
-        s_i2c_bus_handle = bus_handle;
-        s_owns_bus = false;
-    } else {
-        /* Create new I2C bus */
-        i2c_master_bus_config_t i2c_bus_config = {
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .i2c_port = I2C_NUM_0,
-            .scl_io_num = PIN_I2C_SCL,
-            .sda_io_num = PIN_I2C_SDA,
-            .glitch_ignore_cnt = 7,
-            .flags.enable_internal_pullup = true,
-        };
-
-        ret = i2c_new_master_bus(&i2c_bus_config, &s_i2c_bus_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to create I2C bus: %s", esp_err_to_name(ret));
-            return ret;
-        }
-        s_owns_bus = true;
-    }
-
-    /* Add VL53L0X device to bus */
-    i2c_device_config_t vl53l0x_config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = VL53L0X_I2C_ADDR,
-        .scl_speed_hz = VL53L0X_I2C_FREQ_HZ,
-    };
-
-    ret = i2c_master_bus_add_device(s_i2c_bus_handle, &vl53l0x_config, &s_vl53l0x_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add VL53L0X device: %s", esp_err_to_name(ret));
-        if (s_owns_bus) {
-            i2c_del_master_bus(s_i2c_bus_handle);
-        }
-        s_i2c_bus_handle = NULL;
-        return ret;
-    }
+    bb_configure_pins();
 
     /* Check device ID */
-    uint8_t model_id;
-    ret = vl53l0x_read_reg8(IDENTIFICATION_MODEL_ID, &model_id);
+    uint8_t model_id = 0;
+    esp_err_t ret = vl53l0x_read_reg8(IDENTIFICATION_MODEL_ID, &model_id);
     if (ret != ESP_OK || model_id != 0xEE) {
         ESP_LOGE(TAG, "VL53L0X not found (ID: 0x%02X, expected 0xEE)", model_id);
-        i2c_master_bus_rm_device(s_vl53l0x_handle);
-        if (s_owns_bus) {
-            i2c_del_master_bus(s_i2c_bus_handle);
-        }
-        s_vl53l0x_handle = NULL;
-        s_i2c_bus_handle = NULL;
         return ESP_FAIL;
     }
 
@@ -791,58 +854,41 @@ esp_err_t distance_sensor_init(i2c_master_bus_handle_t bus_handle)
     ret = vl53l0x_data_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Data init failed: %s", esp_err_to_name(ret));
-        goto cleanup;
+        return ret;
     }
 
     ret = vl53l0x_static_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Static init failed: %s", esp_err_to_name(ret));
-        goto cleanup;
+        return ret;
     }
 
     ret = vl53l0x_perform_ref_calibration();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Ref calibration failed: %s", esp_err_to_name(ret));
-        goto cleanup;
+        return ret;
     }
 
     s_initialized = true;
     ESP_LOGI(TAG, "VL53L0X initialized successfully");
-
     return ESP_OK;
-
-cleanup:
-    i2c_master_bus_rm_device(s_vl53l0x_handle);
-    if (s_owns_bus) {
-        i2c_del_master_bus(s_i2c_bus_handle);
-    }
-    s_vl53l0x_handle = NULL;
-    s_i2c_bus_handle = NULL;
-    return ret;
 }
 
 esp_err_t distance_sensor_deinit(void)
 {
-    if (!s_initialized) {
-        ESP_LOGW(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (s_vl53l0x_handle) {
-        i2c_master_bus_rm_device(s_vl53l0x_handle);
-        s_vl53l0x_handle = NULL;
-    }
-
-    if (s_owns_bus && s_i2c_bus_handle) {
-        i2c_del_master_bus(s_i2c_bus_handle);
-    }
-    s_i2c_bus_handle = NULL;
-    s_owns_bus = false;
-
     s_initialized = false;
     ESP_LOGI(TAG, "VL53L0X deinitialized");
-
     return ESP_OK;
+}
+
+bool distance_sensor_is_initialized(void)
+{
+    return s_initialized;
+}
+
+i2c_master_bus_handle_t distance_sensor_get_bus_handle(void)
+{
+    return NULL;
 }
 
 esp_err_t distance_sensor_get_distance(uint16_t *distance_mm)
@@ -1015,14 +1061,4 @@ esp_err_t distance_sensor_read_continuous(uint16_t *distance_mm)
     ret = vl53l0x_write_reg8(SYSTEM_INTERRUPT_CLEAR, 0x01);
 
     return ret;
-}
-
-bool distance_sensor_is_initialized(void)
-{
-    return s_initialized;
-}
-
-i2c_master_bus_handle_t distance_sensor_get_bus_handle(void)
-{
-    return s_i2c_bus_handle;
 }
