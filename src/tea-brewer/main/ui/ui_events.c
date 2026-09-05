@@ -14,6 +14,8 @@
 #include "../uart_comm.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "UI_EVENTS";
 
@@ -49,7 +51,6 @@ static TimerHandle_t pot_timeout_timer = NULL;
 static TimerHandle_t brewing_pot_check_timer = NULL;    // Check pot every 5s during brewing/infusing
 static TimerHandle_t brewing_timeout_timer = NULL;      // 20 minute max brewing time
 static TimerHandle_t infusion_timer = NULL;             // 1 second timer for infusion countdown
-static TimerHandle_t teabag_dropoff_timer = NULL;       // Timer for teabag shake sequence
 static uint8_t scheduled_target_temp = 0;
 static uint8_t scheduled_hour = 0;
 static uint8_t scheduled_minute = 0;
@@ -85,8 +86,7 @@ static uint16_t infusion_target_seconds = 0;  // Target infusion time in seconds
 static uint16_t infusion_elapsed_seconds = 0; // Elapsed infusion time in seconds
 
 // Teabag dropoff state
-static uint8_t teabag_shake_count = 0;    // Counter for shake sequence
-static bool teabag_shake_going_down = false;  // Direction of shake movement
+static bool dropoff_returning_to_idle = false; // Flag indicating dropoff finished and returning to idle
 
 // Startup motor initialization state
 static bool startup_motor_init_pending = true;  // Need to home and move to idle position on startup
@@ -112,7 +112,6 @@ static bool schedule_restore_pending = false;
 static void brewing_pot_check_callback(TimerHandle_t xTimer);
 static void brewing_timeout_callback(TimerHandle_t xTimer);
 static void infusion_timer_callback(TimerHandle_t xTimer);
-static void teabag_dropoff_timer_callback(TimerHandle_t xTimer);
 static void on_brewing_pot_presence(bool is_present, uint16_t distance_mm);
 static void start_brewing_state(void);
 static void start_infusing_state(void);
@@ -452,7 +451,7 @@ void ui_events_process_pending_schedule(void)
             extern lv_obj_t * ui_ScheduledScreen;
             if (ui_ScheduledScreen) {
                 lv_disp_load_scr(ui_ScheduledScreen);
-                lv_event_send(ui_ScheduledScreen, LV_EVENT_SCREEN_LOADED, NULL);
+                lv_obj_send_event(ui_ScheduledScreen, LV_EVENT_SCREEN_LOADED, NULL);
             }
             lvgl_port_unlock();
         }
@@ -702,37 +701,16 @@ static void finish_infusion(void)
     start_teabag_dropoff();
 }
 
-// Start the teabag dropoff state - move to 100%, shake, then to idle position
+// Start the teabag dropoff state - sends dropoff command to motor controller
 static void start_teabag_dropoff(void)
 {
     current_brew_state = BREW_STATE_TEABAG_DROPOFF;
-    teabag_shake_count = 0;
-    teabag_shake_going_down = true;  // First move will be down to 95%
+    dropoff_returning_to_idle = false;
     
-    ESP_LOGI(TAG, "Starting teabag dropoff - moving to 100%% position");
+    ESP_LOGI(TAG, "Starting teabag dropoff sequence on motor controller");
     
-    // Move motor to 100% position (fully lowered)
     uart_comm_set_move_complete_callback(on_brewing_move_complete);
-    uart_comm_move_to_percent(100.0f);
-}
-
-// Teabag dropoff timer callback - for delay between shakes
-static void teabag_dropoff_timer_callback(TimerHandle_t xTimer)
-{
-    if (current_brew_state != BREW_STATE_TEABAG_DROPOFF) {
-        return;
-    }
-    
-    // Continue shake sequence based on current state
-    if (teabag_shake_going_down) {
-        // Move to 95% (shake down)
-        ESP_LOGI(TAG, "Shake %d: moving to 95%%", teabag_shake_count + 1);
-        uart_comm_move_to_percent(95.0f);
-    } else {
-        // Move back to 100% (shake up)
-        ESP_LOGI(TAG, "Shake %d: moving back to 100%%", teabag_shake_count + 1);
-        uart_comm_move_to_percent(100.0f);
-    }
+    uart_comm_trigger_teabag_dropoff();
 }
 
 // Motor move complete callback for brewing sequence
@@ -744,63 +722,16 @@ static void on_brewing_move_complete(bool success)
     }
     
     if (current_brew_state == BREW_STATE_TEABAG_DROPOFF) {
-        motor_status_t status;
-        uart_comm_get_cached_status(&status);
-        
-        // Check where we are now
-        bool at_100 = (status.position_percent >= 99.0f);
-        bool at_95 = (status.position_percent >= 94.0f && status.position_percent <= 96.0f);
-        
-        if (teabag_shake_count == 0 && at_100 && teabag_shake_going_down) {
-            // Just arrived at 100% for first time, start shaking sequence
-            ESP_LOGI(TAG, "Reached 100%% - starting shake sequence");
-            
-            // Create timer if needed
-            if (teabag_dropoff_timer == NULL) {
-                teabag_dropoff_timer = xTimerCreate(
-                    "teabag_dropoff",
-                    pdMS_TO_TICKS(200),
-                    pdFALSE,  // One-shot
-                    NULL,
-                    teabag_dropoff_timer_callback
-                );
-            }
-            
-            // Start first shake after short delay
-            if (teabag_dropoff_timer != NULL) {
-                xTimerChangePeriod(teabag_dropoff_timer, pdMS_TO_TICKS(200), 0);
-                xTimerStart(teabag_dropoff_timer, 0);
-            }
-        } else if (at_95) {
-            // Completed shake down, now go back up
-            teabag_shake_going_down = false;
-            
-            if (teabag_dropoff_timer != NULL) {
-                xTimerChangePeriod(teabag_dropoff_timer, pdMS_TO_TICKS(100), 0);
-                xTimerStart(teabag_dropoff_timer, 0);
-            }
-        } else if (at_100 && !teabag_shake_going_down) {
-            // Completed shake up - one full shake done
-            teabag_shake_count++;
-            ESP_LOGI(TAG, "Shake %d complete", teabag_shake_count);
-            
-            if (teabag_shake_count < 3) {
-                // More shakes to do, go down again
-                teabag_shake_going_down = true;
-                
-                if (teabag_dropoff_timer != NULL) {
-                    xTimerChangePeriod(teabag_dropoff_timer, pdMS_TO_TICKS(100), 0);
-                    xTimerStart(teabag_dropoff_timer, 0);
-                }
-            } else {
-                // All 3 shakes done, move to idle position
-                ESP_LOGI(TAG, "All shakes complete - moving to idle position");
-                int idle_pos = settings_get_idle_position();
-                ESP_LOGI(TAG, "Moving to idle position: %d%%", idle_pos);
-                uart_comm_move_to_percent((float)idle_pos);
-            }
+        if (!dropoff_returning_to_idle) {
+            // Dropoff sequence on controller is complete - now move to idle position
+            ESP_LOGI(TAG, "Teabag dropoff sequence complete on controller - moving to idle position");
+            dropoff_returning_to_idle = true;
+            int idle_pos = settings_get_idle_position();
+            ESP_LOGI(TAG, "Moving to idle position: %d%%", idle_pos);
+            uart_comm_move_to_percent((float)idle_pos);
         } else {
-            // We're at idle position, brewing complete
+            // Return to idle position is complete!
+            dropoff_returning_to_idle = false;
             finish_brew_cycle();
         }
     }
@@ -815,19 +746,37 @@ static void finish_brew_cycle(void)
     if (brewing_pot_check_timer != NULL) {
         xTimerStop(brewing_pot_check_timer, 0);
     }
-    if (teabag_dropoff_timer != NULL) {
-        xTimerStop(teabag_dropoff_timer, 0);
-    }
     
     // Reset state (already on main screen, temperature timer already slow)
     current_brew_state = BREW_STATE_IDLE;
     brewing_start_temp_captured = false;
-    teabag_shake_count = 0;
+    dropoff_returning_to_idle = false;
     
     // Clear move complete callback
     uart_comm_set_move_complete_callback(NULL);
     
     ESP_LOGI(TAG, "Teabag dropoff complete - motor at idle position");
+}
+
+/* ============================================
+   TEABAG DROPOFF CONTROL
+   ============================================ */
+
+bool teabag_dropoff_is_active(void)
+{
+    return (current_brew_state == BREW_STATE_TEABAG_DROPOFF);
+}
+
+bool teabag_dropoff_trigger_sequence(void)
+{
+    if (current_brew_state != BREW_STATE_IDLE) {
+        ESP_LOGW(TAG, "Cannot trigger dropoff: system is not idle (state=%d)", current_brew_state);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "Triggering teabag dropoff sequence manually");
+    start_teabag_dropoff();
+    return true;
 }
 
 /* ============================================
@@ -1065,12 +1014,12 @@ void stopBrewing(lv_event_t * e)
     if (infusion_timer != NULL) {
         xTimerStop(infusion_timer, 0);
     }
-    if (teabag_dropoff_timer != NULL) {
-        xTimerStop(teabag_dropoff_timer, 0);
-    }
     
     // Clear move complete callback
     uart_comm_set_move_complete_callback(NULL);
+    
+    // Stop any ongoing motor operation
+    uart_comm_motor_stop();
     
     // Move motor back to idle position (safe position)
     int idle_pos = settings_get_idle_position();
@@ -1086,7 +1035,7 @@ void stopBrewing(lv_event_t * e)
     // Reset state
     current_brew_state = BREW_STATE_IDLE;
     brewing_start_temp_captured = false;
-    teabag_shake_count = 0;
+    dropoff_returning_to_idle = false;
     
     // Navigate back to MainScreen
     extern lv_obj_t * ui_MainScreen;
@@ -1379,22 +1328,13 @@ void idlePositionDown(lv_event_t * e)
     }
 }
 
-// Debug function to trigger teabag dropoff sequence
+// Function to trigger teabag dropoff sequence
 void startTeabagDropoff(lv_event_t * e)
 {
-#if DEBUG_ENABLED
-    ESP_LOGI(TAG, "DEBUG: Starting teabag dropoff sequence");
-    
-    // Only start if currently idle
-    if (current_brew_state != BREW_STATE_IDLE) {
-        ESP_LOGW(TAG, "Cannot start teabag dropoff - brewing in progress");
-        return;
+    ESP_LOGI(TAG, "UI: Triggering teabag dropoff sequence");
+    if (!teabag_dropoff_trigger_sequence()) {
+        ESP_LOGW(TAG, "Cannot start teabag dropoff - brewing in progress or busy");
     }
-    
-    start_teabag_dropoff();
-#else
-    ESP_LOGW(TAG, "Teabag dropoff debug function not available in production");
-#endif
 }
 
 void changeSchedulerTemperature(lv_event_t * e)

@@ -207,6 +207,23 @@ bool uart_comm_move_to_percent(float percent);
 bool uart_comm_move_to_position(int32_t steps);
 
 /**
+ * @brief Start teabag dropoff sequence on motor controller
+ * @param cycles Number of shake cycles
+ * @param low_percent Lower shake position %
+ * @param high_percent Upper shake position % (supports > 100% like 101.0%)
+ * @param delay_ms Pause between shakes in ms (0 = immediate/aggressive)
+ * @param speed_rpm Motor speed during sequence in RPM (0 = default 120 RPM)
+ * @return true if command sent
+ */
+bool uart_comm_start_teabag_dropoff(uint8_t cycles, float low_percent, float high_percent, uint16_t delay_ms, uint16_t speed_rpm);
+
+/**
+ * @brief Trigger teabag dropoff sequence on motor controller using controller's configured parameters
+ * @return true if command sent
+ */
+bool uart_comm_trigger_teabag_dropoff(void);
+
+/**
  * @brief Stop motor immediately
  * @return true if command sent
  */

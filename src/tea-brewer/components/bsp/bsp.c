@@ -50,7 +50,7 @@ static esp_err_t lcd_config(void);
  * LCD Panel Function
  *
  **************************************************************************************************/
-IRAM_ATTR static bool on_vsync_event(esp_lcd_panel_handle_t panel, esp_lcd_rgb_panel_event_data_t *edata, void *user_ctx)
+IRAM_ATTR static bool on_vsync_event(esp_lcd_panel_handle_t panel, const esp_lcd_rgb_panel_event_data_t *edata, void *user_ctx)
 {
     BaseType_t need_yield = pdFALSE;
 #if CONFIG_BSP_LCD_RGB_REFRESH_MANUALLY
@@ -484,7 +484,7 @@ lv_disp_t *lvgl_port_display_init()
         .task_max_sleep_ms = 500,   /* Maximum sleep in LVGL task */
         .timer_period_ms = 5        /* LVGL timer tick period in ms */
     };
-    ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "LVGL port initialization failed");
+    ESP_RETURN_ON_FALSE(lvgl_port_init(&lvgl_cfg) == ESP_OK, NULL, TAG, "LVGL port initialization failed");
 
     uint32_t buff_size = BSP_LCD_H_RES * EXAMPLE_LCD_DRAW_BUFF_HEIGHT;
 #if EXAMPLE_LCD_LVGL_FULL_REFRESH || EXAMPLE_LCD_LVGL_DIRECT_MODE

@@ -98,6 +98,8 @@ static bool IRAM_ATTR step_timer_callback(gptimer_handle_t timer,
     return false;
 }
 
+static uint32_t current_speed_rpm = NORMAL_SPEED_RPM;
+
 /* ============================================
    PRIVATE FUNCTIONS
    ============================================ */
@@ -116,6 +118,18 @@ static esp_err_t set_speed_rpm(uint32_t rpm)
     };
     
     return gptimer_set_alarm_action(step_timer, &alarm_config);
+}
+
+esp_err_t motor_set_speed_rpm(uint32_t rpm)
+{
+    if (rpm < 10 || rpm > 800) return ESP_ERR_INVALID_ARG;
+    current_speed_rpm = rpm;
+    return set_speed_rpm(rpm);
+}
+
+uint32_t motor_get_speed_rpm(void)
+{
+    return current_speed_rpm;
 }
 
 static void set_direction(bool forward)
@@ -281,6 +295,7 @@ esp_err_t motor_init(void)
     tmc2130_enable(&tmc2130);
     configure_for_normal_operation();
     set_speed_rpm(NORMAL_SPEED_RPM);
+    motor_load_dropoff_config();
     
     ESP_LOGI(TAG, "Motor control initialized");
     return ESP_OK;
@@ -582,7 +597,7 @@ esp_err_t motor_move_to_percent(float percent)
     }
     
     if (percent < 0.0f) percent = 0.0f;
-    if (percent > 100.0f) percent = 100.0f;
+    if (percent > 110.0f) percent = 110.0f; // Allow > 100% (e.g. 101%)
     
     int32_t usable_min = calibration.backoff_steps;
     int32_t usable_max = calibration.total_steps - calibration.backoff_steps;
@@ -600,9 +615,10 @@ esp_err_t motor_move_to_position(int32_t target)
         return ESP_ERR_INVALID_STATE;
     }
     
-    /* Clamp to safe range */
-    int32_t safe_min = calibration.backoff_steps;
-    int32_t safe_max = calibration.total_steps - calibration.backoff_steps;
+    /* Clamp to safe range - allow moving past 100% into backoff, but keep 5-step safety margin from hard stop */
+    int32_t safe_min = 5;
+    int32_t safe_max = calibration.total_steps - 5;
+    if (safe_max < safe_min) safe_max = safe_min;
     
     if (target < safe_min) target = safe_min;
     if (target > safe_max) target = safe_max;
@@ -615,6 +631,168 @@ esp_err_t motor_move_to_position(int32_t target)
     }
     
     return ESP_OK;
+}
+
+esp_err_t motor_execute_dropoff(uint8_t cycles, float low_percent, float high_percent, uint16_t delay_ms, uint16_t speed_rpm)
+{
+    if (!is_homed) {
+        current_error = MOTOR_ERROR_NOT_HOMED;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!calibration.is_valid) {
+        current_error = MOTOR_ERROR_NOT_CALIBRATED;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (cycles == 0) cycles = 3;
+    if (speed_rpm == 0) speed_rpm = NORMAL_SPEED_RPM;
+
+    ESP_LOGI(TAG, "Executing dropoff: %d cycles, %.1f%% to %.1f%%, delay %d ms, speed %d RPM",
+             cycles, low_percent, high_percent, delay_ms, speed_rpm);
+
+    uint32_t prev_speed = current_speed_rpm;
+    set_speed_rpm(speed_rpm);
+    current_speed_rpm = speed_rpm;
+
+    // 1. Move to high position first
+    ESP_LOGI(TAG, "Dropoff: moving to initial high position %.1f%%", high_percent);
+    motor_move_to_percent(high_percent);
+
+    if (delay_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
+
+    // 2. Shake cycles: down to low_percent, back up to high_percent
+    for (uint8_t i = 0; i < cycles; i++) {
+        ESP_LOGI(TAG, "Dropoff shake %d/%d: moving down to %.1f%%", i + 1, cycles, low_percent);
+        motor_move_to_percent(low_percent);
+
+        if (delay_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        }
+
+        ESP_LOGI(TAG, "Dropoff shake %d/%d: moving back to %.1f%%", i + 1, cycles, high_percent);
+        motor_move_to_percent(high_percent);
+
+        if (delay_ms > 0 && i < cycles - 1) {
+            vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        }
+    }
+
+    // Restore normal speed
+    set_speed_rpm(prev_speed);
+    current_speed_rpm = prev_speed;
+    ESP_LOGI(TAG, "Dropoff sequence complete, restored speed to %ld RPM", (long)prev_speed);
+
+    return ESP_OK;
+}
+
+/* ============================================
+   TEABAG DROPOFF CONFIGURATION & CONTROL
+   ============================================ */
+
+#define DROPOFF_NVS_NAMESPACE   "dropoff"
+#define DROPOFF_NVS_KEY         "config"
+
+#define DEFAULT_DROPOFF_CYCLES      3
+#define DEFAULT_DROPOFF_LOW_POS     98.0f
+#define DEFAULT_DROPOFF_HIGH_POS    101.0f
+#define DEFAULT_DROPOFF_DELAY_MS    0
+#define DEFAULT_DROPOFF_SPEED_RPM   180
+
+static motor_dropoff_config_t s_dropoff_config = {
+    .cycles = DEFAULT_DROPOFF_CYCLES,
+    .low_percent = DEFAULT_DROPOFF_LOW_POS,
+    .high_percent = DEFAULT_DROPOFF_HIGH_POS,
+    .delay_ms = DEFAULT_DROPOFF_DELAY_MS,
+    .speed_rpm = DEFAULT_DROPOFF_SPEED_RPM,
+};
+
+void motor_get_dropoff_config(motor_dropoff_config_t *config)
+{
+    if (config != NULL) {
+        *config = s_dropoff_config;
+    }
+}
+
+esp_err_t motor_set_dropoff_config(const motor_dropoff_config_t *config)
+{
+    if (config == NULL) return ESP_ERR_INVALID_ARG;
+    if (config->cycles < 1 || config->cycles > 100) return ESP_ERR_INVALID_ARG;
+    if (config->low_percent < 0.0f || config->low_percent > 110.0f) return ESP_ERR_INVALID_ARG;
+    if (config->high_percent < 0.0f || config->high_percent > 110.0f) return ESP_ERR_INVALID_ARG;
+    if (config->speed_rpm > 800) return ESP_ERR_INVALID_ARG;
+    
+    s_dropoff_config = *config;
+    if (s_dropoff_config.speed_rpm == 0) {
+        s_dropoff_config.speed_rpm = DEFAULT_DROPOFF_SPEED_RPM;
+    }
+    return ESP_OK;
+}
+
+esp_err_t motor_save_dropoff_config(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t ret = nvs_open(DROPOFF_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS for dropoff save: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = nvs_set_blob(nvs_handle, DROPOFF_NVS_KEY, &s_dropoff_config, sizeof(s_dropoff_config));
+    if (ret == ESP_OK) {
+        ret = nvs_commit(nvs_handle);
+        ESP_LOGI(TAG, "Dropoff config saved to NVS: %d cycles, %.1f%%-%.1f%%, %d ms, %d RPM",
+                 s_dropoff_config.cycles, s_dropoff_config.low_percent, s_dropoff_config.high_percent,
+                 s_dropoff_config.delay_ms, s_dropoff_config.speed_rpm);
+    }
+    nvs_close(nvs_handle);
+    return ret;
+}
+
+esp_err_t motor_load_dropoff_config(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t ret = nvs_open(DROPOFF_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (ret != ESP_OK) {
+        motor_reset_dropoff_config();
+        return ret;
+    }
+    motor_dropoff_config_t loaded;
+    size_t size = sizeof(loaded);
+    ret = nvs_get_blob(nvs_handle, DROPOFF_NVS_KEY, &loaded, &size);
+    nvs_close(nvs_handle);
+    if (ret == ESP_OK && size == sizeof(loaded)) {
+        if (loaded.cycles >= 1 && loaded.cycles <= 100 &&
+            loaded.low_percent >= 0.0f && loaded.low_percent <= 110.0f &&
+            loaded.high_percent >= 0.0f && loaded.high_percent <= 110.0f &&
+            loaded.speed_rpm <= 800) {
+            if (loaded.speed_rpm == 0) loaded.speed_rpm = DEFAULT_DROPOFF_SPEED_RPM;
+            s_dropoff_config = loaded;
+            ESP_LOGI(TAG, "Loaded dropoff config from NVS: %d cycles, %.1f%%-%.1f%%, %d ms, %d RPM",
+                     s_dropoff_config.cycles, s_dropoff_config.low_percent, s_dropoff_config.high_percent,
+                     s_dropoff_config.delay_ms, s_dropoff_config.speed_rpm);
+            return ESP_OK;
+        }
+    }
+    motor_reset_dropoff_config();
+    return ESP_FAIL;
+}
+
+void motor_reset_dropoff_config(void)
+{
+    s_dropoff_config.cycles = DEFAULT_DROPOFF_CYCLES;
+    s_dropoff_config.low_percent = DEFAULT_DROPOFF_LOW_POS;
+    s_dropoff_config.high_percent = DEFAULT_DROPOFF_HIGH_POS;
+    s_dropoff_config.delay_ms = DEFAULT_DROPOFF_DELAY_MS;
+    s_dropoff_config.speed_rpm = DEFAULT_DROPOFF_SPEED_RPM;
+}
+
+esp_err_t motor_execute_configured_dropoff(void)
+{
+    return motor_execute_dropoff(s_dropoff_config.cycles,
+                                 s_dropoff_config.low_percent,
+                                 s_dropoff_config.high_percent,
+                                 s_dropoff_config.delay_ms,
+                                 s_dropoff_config.speed_rpm);
 }
 
 void motor_stop(void)
@@ -706,7 +884,7 @@ float motor_get_position_percent(void)
     
     float percent = ((float)(current_position - usable_min) / (float)usable_range) * 100.0f;
     if (percent < 0.0f) percent = 0.0f;
-    if (percent > 100.0f) percent = 100.0f;
+    if (percent > 115.0f) percent = 115.0f;
     
     return percent;
 }

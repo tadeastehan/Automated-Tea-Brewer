@@ -40,6 +40,7 @@ typedef enum
     CMD_STOP = 0x22,
     CMD_ENABLE = 0x23,
     CMD_DISABLE = 0x24,
+    CMD_TEABAG_DROPOFF = 0x25,
     CMD_SET_SGT = 0x30,
     CMD_GET_SGT = 0x31,
     CMD_SAVE_CALIBRATION = 0x40,
@@ -112,6 +113,16 @@ typedef struct __attribute__((packed))
 {
     int32_t position;
 } proto_move_position_t;
+
+/* Teabag dropoff command data */
+typedef struct __attribute__((packed))
+{
+    uint8_t cycles;           // Number of shake cycles (default 3)
+    int16_t low_percent;      // Fixed point: value / 10 = percent (e.g. 980 for 98.0%)
+    int16_t high_percent;     // Fixed point: value / 10 = percent (e.g. 1010 for 101.0%)
+    uint16_t delay_ms;        // Delay between shakes in ms (0 = zero delay)
+    uint16_t speed_rpm;       // Motor speed in RPM (e.g. 120, 200)
+} proto_teabag_dropoff_t;
 
 /* Parsed frame */
 typedef struct

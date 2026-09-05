@@ -30,6 +30,7 @@ static const char *TAG = "UART_COMM";
 #define CMD_STOP                0x22
 #define CMD_ENABLE              0x23
 #define CMD_DISABLE             0x24
+#define CMD_TEABAG_DROPOFF      0x25
 #define CMD_SET_SGT             0x30
 #define CMD_GET_SGT             0x31
 #define CMD_SAVE_CALIBRATION    0x40
@@ -653,11 +654,49 @@ bool uart_comm_home(void)
 bool uart_comm_move_to_percent(float percent)
 {
     if (percent < 0.0f) percent = 0.0f;
-    if (percent > 100.0f) percent = 100.0f;
+    if (percent > 110.0f) percent = 110.0f; // Allow > 100% (e.g. 101%)
     
     int16_t pct_fixed = (int16_t)(percent * 10.0f);
     ESP_LOGI(TAG, "Sending MOVE_PERCENT: %.1f%%", percent);
     send_command(CMD_MOVE_PERCENT, (uint8_t*)&pct_fixed, 2);
+    return true;
+}
+
+typedef struct __attribute__((packed))
+{
+    uint8_t cycles;
+    int16_t low_percent;
+    int16_t high_percent;
+    uint16_t delay_ms;
+    uint16_t speed_rpm;
+} proto_teabag_dropoff_t;
+
+bool uart_comm_start_teabag_dropoff(uint8_t cycles, float low_percent, float high_percent, uint16_t delay_ms, uint16_t speed_rpm)
+{
+    if (low_percent < 0.0f) low_percent = 0.0f;
+    if (low_percent > 110.0f) low_percent = 110.0f;
+    if (high_percent < 0.0f) high_percent = 0.0f;
+    if (high_percent > 110.0f) high_percent = 110.0f;
+
+    proto_teabag_dropoff_t data = {
+        .cycles = cycles,
+        .low_percent = (int16_t)(low_percent * 10.0f),
+        .high_percent = (int16_t)(high_percent * 10.0f),
+        .delay_ms = delay_ms,
+        .speed_rpm = speed_rpm,
+    };
+
+    ESP_LOGI(TAG, "Sending TEABAG_DROPOFF: %d cycles, %.1f%% - %.1f%%, %d ms, %d RPM",
+             cycles, low_percent, high_percent, delay_ms, speed_rpm);
+
+    send_command(CMD_TEABAG_DROPOFF, (uint8_t*)&data, sizeof(proto_teabag_dropoff_t));
+    return true;
+}
+
+bool uart_comm_trigger_teabag_dropoff(void)
+{
+    ESP_LOGI(TAG, "Sending TEABAG_DROPOFF trigger (using controller config)");
+    send_command(CMD_TEABAG_DROPOFF, NULL, 0);
     return true;
 }
 

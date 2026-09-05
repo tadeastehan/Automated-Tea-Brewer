@@ -130,6 +130,82 @@ void motor_enable(void);
  */
 void motor_disable(void);
 
+/**
+ * @brief Set motor speed in RPM
+ * @param rpm Speed in RPM (10 - 800)
+ * @return ESP_OK on success
+ */
+esp_err_t motor_set_speed_rpm(uint32_t rpm);
+
+/**
+ * @brief Get current motor speed in RPM
+ * @return Current speed in RPM
+ */
+uint32_t motor_get_speed_rpm(void);
+
+/**
+ * @brief Execute complete teabag dropoff sequence
+ * 
+ * Moves to high_percent, shakes between low_percent and high_percent
+ * for cycles times at the given speed and delay.
+ * 
+ * @param cycles Number of shake cycles
+ * @param low_percent Lower shake position %
+ * @param high_percent Upper shake position % (supports > 100% like 101.0%)
+ * @param delay_ms Pause between shakes in ms (0 = immediate/aggressive)
+ * @param speed_rpm Speed during sequence in RPM (0 = default normal speed)
+ * @return ESP_OK on success
+ */
+esp_err_t motor_execute_dropoff(uint8_t cycles, float low_percent, float high_percent, uint16_t delay_ms, uint16_t speed_rpm);
+
+/* ============================================
+   TEABAG DROPOFF CONFIGURATION
+   ============================================ */
+
+typedef struct {
+    uint8_t cycles;         // Number of shake cycles (default: 3)
+    float low_percent;      // Lower position % (default: 98.0f)
+    float high_percent;     // Upper position % (default: 101.0f)
+    uint16_t delay_ms;      // Delay between shakes in ms (default: 0)
+    uint16_t speed_rpm;     // Motor speed in RPM (default: 180)
+} motor_dropoff_config_t;
+
+/**
+ * @brief Get current dropoff configuration
+ * @param config Pointer to store configuration
+ */
+void motor_get_dropoff_config(motor_dropoff_config_t *config);
+
+/**
+ * @brief Set dropoff configuration in RAM
+ * @param config New configuration
+ * @return ESP_OK on success
+ */
+esp_err_t motor_set_dropoff_config(const motor_dropoff_config_t *config);
+
+/**
+ * @brief Save dropoff configuration to NVS
+ * @return ESP_OK on success
+ */
+esp_err_t motor_save_dropoff_config(void);
+
+/**
+ * @brief Load dropoff configuration from NVS
+ * @return ESP_OK on success
+ */
+esp_err_t motor_load_dropoff_config(void);
+
+/**
+ * @brief Reset dropoff configuration to defaults
+ */
+void motor_reset_dropoff_config(void);
+
+/**
+ * @brief Execute dropoff sequence using current stored configuration
+ * @return ESP_OK on success
+ */
+esp_err_t motor_execute_configured_dropoff(void);
+
 /* ============================================
    CONFIGURATION
    ============================================ */

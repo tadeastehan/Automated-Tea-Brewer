@@ -14,4 +14,5 @@ idf_component_register(SRC_DIRS
                     json
                     driver
                     freertos
-                    esp_common)
+                    esp_common
+                    esp32-wifi-bootstrap)

@@ -10,7 +10,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
-#include "esp_spi_flash.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
@@ -30,6 +29,7 @@
 #include "ui/ui.h"
 #include "ui/ui_events.h"
 #include "webserver.h"
+#include "wifi_config.h"
 
 static const char *TAG = "main";
 

@@ -308,6 +308,43 @@ static void handle_command(proto_frame_t *frame)
                 send_nak(PROTO_ERR_INVALID_PARAM);
             }
             break;
+
+        case CMD_TEABAG_DROPOFF:
+            if (frame->length >= sizeof(proto_teabag_dropoff_t)) {
+                proto_teabag_dropoff_t dropoff_data;
+                memcpy(&dropoff_data, frame->data, sizeof(proto_teabag_dropoff_t));
+                
+                float low_percent = (float)dropoff_data.low_percent / 10.0f;
+                float high_percent = (float)dropoff_data.high_percent / 10.0f;
+                
+                ESP_LOGI(TAG, "TEABAG_DROPOFF (UART params): %d cycles, %.1f%% - %.1f%%, %d ms, %d RPM",
+                         dropoff_data.cycles, low_percent, high_percent, 
+                         dropoff_data.delay_ms, dropoff_data.speed_rpm);
+                
+                send_ack();  /* Acknowledge command receipt */
+                
+                ret = motor_execute_dropoff(dropoff_data.cycles, low_percent, high_percent, 
+                                           dropoff_data.delay_ms, dropoff_data.speed_rpm);
+            } else {
+                ESP_LOGI(TAG, "TEABAG_DROPOFF: running controller-configured sequence");
+                send_ack();
+                ret = motor_execute_configured_dropoff();
+            }
+            if (ret == ESP_OK) {
+                send_position();
+                send_notify(NOTIFY_MOVE_COMPLETE, 0);
+            } else if (ret == ESP_ERR_INVALID_STATE) {
+                motor_status_t status;
+                motor_get_status(&status);
+                if (!status.is_homed) {
+                    send_notify(NOTIFY_ERROR, PROTO_ERR_NOT_HOMED);
+                } else {
+                    send_notify(NOTIFY_ERROR, PROTO_ERR_NOT_CALIBRATED);
+                }
+            } else {
+                send_notify(NOTIFY_ERROR, PROTO_ERR_MOTOR_FAULT);
+            }
+            break;
             
         case CMD_STOP:
             ESP_LOGI(TAG, "STOP command");

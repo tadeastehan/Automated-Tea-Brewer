@@ -6,6 +6,11 @@
 #ifndef _UI_EVENTS_H
 #define _UI_EVENTS_H
 
+#include <stdint.h>
+#include <stdbool.h>
+#include "esp_err.h"
+#include "lvgl.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,6 +47,9 @@ void ui_startup_motor_init(void);
 
 // Get current brew state (for webserver)
 web_brew_state_t ui_get_brew_state(void);
+
+bool teabag_dropoff_is_active(void);
+bool teabag_dropoff_trigger_sequence(void);
 
 // Get brew progress (0-100)
 uint8_t ui_get_brew_progress(void);
